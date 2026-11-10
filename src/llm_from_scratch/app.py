@@ -1,8 +1,11 @@
+from pathlib import Path
+
 from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.worker import WorkerCancelled, get_current_worker
 from textual.widgets import Footer, Header, RichLog, Sparkline, Static
+from textual_image.widget import Image
 
 from llm_from_scratch.model import create_model
 from llm_from_scratch.training import TrainingProgress, train
@@ -20,6 +23,7 @@ class TrainingApp(App):
         """Build the dashboard without model-specific metric fields."""
         yield Header()
         with VerticalScroll(id="dashboard"):
+            yield Image(Path.home() / "Documents" / "avatar.jpg", id="avatar")
             yield Static("Idle — press S to train.", id="status")
             with Vertical(id="metrics", classes="panel"):
                 yield Static("Step: —", id="step")

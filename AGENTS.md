@@ -71,6 +71,14 @@ Read relevant design-log entries before revisiting an existing choice.
 If a decision changes, add a new entry referencing the previous one;
 preserve the history.
 
+# README
+
+Keep `README.md` focused on important, high-level information that helps a
+human understand the repository and how to use it. It is not a changelog or
+a dumping ground for every change, experiment, or implementation detail.
+Use well-structured Markdown with clear headings and logically grouped content.
+Update it only when a change affects that high-level understanding or usage.
+
 # Diagrams
 
 Use custom, editable tldraw Offline diagrams saved in `diagrams/`.
