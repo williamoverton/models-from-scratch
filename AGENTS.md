@@ -56,6 +56,12 @@ Read relevant design-log entries before revisiting an existing choice.
 If a decision changes, add a new entry referencing the previous one;
 preserve the history.
 
+# Diagrams
+
+Use custom, editable tldraw Offline diagrams saved in `diagrams/`.
+Read `diagrams/AGENTS.md` for the diagram index, related decisions, and
+diagram maintenance instructions before working on diagrams.
+
 # Code comments
 
 Keep code and comments focused on the current implementation.
