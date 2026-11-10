@@ -1,10 +1,10 @@
 # Project goals
 
-This is a toy project for learning how large language models work by
-building one from scratch with PyTorch.
+This is a monorepo for learning how different kinds of models work by
+building and training small toy models with PyTorch, not just language models.
 
 The primary goals are:
-- Understand the core components of an LLM and how they fit together.
+- Understand model architectures, their components, and how they learn.
 - Learn PyTorch through practical implementation and experimentation.
 - Keep the implementation small, readable, and easy to reason about.
 
@@ -46,6 +46,17 @@ where it helps understanding.
 
 Keep the structure simple: do not introduce classes, extra files, or
 abstraction layers merely for the sake of modularity.
+
+Keep each model project in its own `src/<project-name>/` directory, with its
+own `pyproject.toml` and Python package. The first project is `src/hello-world/`.
+Use the root uv workspace and shared lockfile for dependencies and local packages.
+
+Shared libraries live in `libs/`. `libs/model-training/` owns the reusable
+Textual dashboard and the model-independent `TrainingProgress` callback contract.
+Model projects own their models, data, training loops, and experiment settings.
+They supply a training function to the dashboard; shared code must not import
+individual model projects or hardcode their training settings.
+Extract only genuinely shared concepts; do not build a general training framework.
 
 The Textual TUI is the main application. Keep small, self-contained console
 experiments in `scripts/` for learning and future reference. These may use

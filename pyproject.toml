@@ -1,17 +1,15 @@
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
 [project]
-name = "llm-from-scratch"
+name = "models-from-scratch"
 version = "0.1.0"
-description = "Learning neural networks from scratch with PyTorch"
+description = "Learning how models work through small PyTorch projects"
 requires-python = ">=3.12"
-dependencies = [
-    "torch",
-    "textual",
-    "textual-image>=0.14.3",
-]
+dependencies = ["hello-world"]
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/llm_from_scratch"]
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["src/hello-world", "libs/model-training"]
+
+[tool.uv.sources]
+hello-world = { workspace = true }

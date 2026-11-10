@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hello-world"
+version = "0.1.0"
+description = "A single linear neuron trained on y = 2x + 1"
+requires-python = ">=3.12"
+dependencies = ["torch", "model-training"]
+
+[project.scripts]
+hello-world = "hello_world.__main__:main"
+
+[tool.uv.sources]
+model-training = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hello_world"]

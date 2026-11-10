@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from pathlib import Path
 
 from textual import work
@@ -7,17 +8,26 @@ from textual.worker import WorkerCancelled, get_current_worker
 from textual.widgets import Footer, Header, RichLog, Sparkline, Static
 from textual_image.widget import Image
 
-from llm_from_scratch.model import create_model
-from llm_from_scratch.training import TrainingProgress, train
+from model_training.progress import ProgressCallback, TrainingProgress
 
 
 class TrainingApp(App):
     CSS_PATH = "app.tcss"
-    TITLE = "Neural Network From Scratch"
+    TITLE = "Models From Scratch"
     BINDINGS = [
         ("s", "start_training", "Start"),
         ("q", "quit", "Quit"),
     ]
+
+    def __init__(
+        self,
+        train: Callable[[ProgressCallback], None],
+        *,
+        title: str,
+    ) -> None:
+        super().__init__()
+        self.train = train
+        self.title = title
 
     def compose(self) -> ComposeResult:
         """Build the dashboard without model-specific metric fields."""
@@ -41,7 +51,7 @@ class TrainingApp(App):
         self.query_one("#metrics").border_title = "Training progress"
         self.query_one("#loss-panel").border_title = "Loss history"
         self.query_one("#training-log").border_title = "Training log"
-        self.write_log("Ready: S starts a fresh CUDA model, 200 steps, learning rate 0.01.")
+        self.write_log("Ready: S starts a fresh training run.")
 
     def action_start_training(self) -> None:
         """Start a fresh experiment unless one is already running."""
@@ -51,10 +61,10 @@ class TrainingApp(App):
         self.loss_history = []
         self.query_one("#loss-history", Sparkline).data = []
         self.query_one("#loss-caption", Static).update("No loss samples yet.")
-        self.query_one("#step", Static).update("Step: 0 / 200")
+        self.query_one("#step", Static).update("Step: —")
         self.query_one("#metric-values", Static).update("No metrics yet.")
-        self.set_status("Training on CUDA…")
-        self.write_log("Starting a fresh model; reporting every 20 steps.")
+        self.set_status("Training…")
+        self.write_log("Starting a fresh training run.")
         self.run_training()
 
     @work(thread=True, exclusive=True)
@@ -68,14 +78,7 @@ class TrainingApp(App):
             self.call_from_thread(self.show_progress, progress)
 
         try:
-            model = create_model()
-            train(
-                model,
-                steps=200,
-                learning_rate=0.01,
-                report_every=20,
-                on_progress=report,
-            )
+            self.train(report)
         except WorkerCancelled:
             return
         except Exception as error:
@@ -93,7 +96,7 @@ class TrainingApp(App):
             self.write_log(f"Training failed: {error}")
         else:
             self.set_status("Completed — press S for a fresh run.")
-            self.write_log("Completed 200 training steps.")
+            self.write_log("Training completed.")
 
     def set_status(self, status: str) -> None:
         """Replace the current training status."""
@@ -111,7 +114,7 @@ class TrainingApp(App):
             self.loss_history.append(progress.metrics["loss"])
             self.query_one("#loss-history", Sparkline).data = list(self.loss_history)
             self.query_one("#loss-caption", Static).update(
-                "Loss per report (every 20 steps) — lower is better."
+                "Loss per report — lower is better."
             )
         self.write_log(
             f"Step {progress.step}: "
