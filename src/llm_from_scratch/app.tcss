@@ -1,0 +1,41 @@
+Screen {
+    layout: vertical;
+}
+
+#dashboard {
+    height: 1fr;
+    padding: 1 2;
+}
+
+#status {
+    height: auto;
+    margin-bottom: 1;
+    color: $accent;
+}
+
+.panel {
+    height: auto;
+    border: round $primary;
+    padding: 0 1;
+    margin-bottom: 1;
+}
+
+#metrics Static {
+    height: auto;
+}
+
+#loss-caption {
+    height: auto;
+    color: $text-muted;
+}
+
+#loss-history {
+    height: 4;
+}
+
+#training-log {
+    height: 1fr;
+    min-height: 6;
+    border: round $primary;
+    padding: 0 1;
+}
