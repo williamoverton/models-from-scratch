@@ -32,17 +32,6 @@ For command-line help:
 uv run hello-world --help
 ```
 
-## Console experiments
-
-Small, self-contained learning experiments are retained in `scripts/`.
-To train a linear neuron without the dashboard:
-
-```bash
-uv run python scripts/train_linear.py
-```
-
-The script prints training loss and the learned weight and bias.
-
 ## Repository layout
 
 - `src/`: individual model projects, each with its own Python package.
