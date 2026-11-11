@@ -49,8 +49,9 @@ Dashboard messages and full training-failure tracebacks are appended to
 
 Model and training defaults live in
 `src/doggie_diffusion/settings.py`. Preview and checkpoint intervals are
-independent, both initially 1,000 optimizer updates. Training starts with
-batch size 32, in-process data loading (`loading_workers=0`), and AdamW at
+independent: previews every 100 optimizer updates and checkpoints every 1,000.
+The U-Net uses feature channels `(64, 128, 256, 256)`, with batch size 32,
+in-process data loading (`loading_workers=0`), and AdamW at
 learning rate 0.0002 with zero weight decay. Add loading subprocesses only
 if measurements show data loading is a bottleneck. GPU memory use and
 throughput have not yet been measured.

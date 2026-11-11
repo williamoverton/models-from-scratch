@@ -62,6 +62,19 @@ snapshots after 100, 500, and 1,000 completed reverse steps from the same run;
 display conversion belongs outside diffusion code. Fixed preview randomness
 has not yet been agreed or implemented.
 
+### Sampling correction after inspecting generated previews
+
+A read-only diagnostic of the step-3,000 checkpoint found final image values
+from approximately -196 to 737, with 99.3% outside the display range. Adopt
+the conventional pixel-space DDPM update: reconstruct the predicted clean
+image from the noise estimate, clip that estimate to `[-1, 1]`, then compute
+the posterior mean as a weighted combination of it and the current noisy image.
+This supersedes the direct, unbounded noise-based reverse mean above.
+Do not clip intermediate noisy states; retain the existing posterior variance
+and final step without added noise. Training and checkpoints are unchanged.
+The user authorized this implementation change only; mathematical checks,
+another generation diagnostic, and a fresh training run remain separate.
+
 ## Streaming data loading
 
 Use all 126,841 prepared images from

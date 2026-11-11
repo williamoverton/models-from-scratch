@@ -47,12 +47,15 @@ class Diffusion(nn.Module):
             "noise_scale", (1 - cumulative_alphas).sqrt()
         )
 
-        # Store coefficients for the reverse mean calculated from predicted noise.
+        # Combine the clean-image estimate and current image into the reverse mean.
         self.register_buffer(
-            "reverse_scale", alphas.rsqrt()
+            "clean_mean_scale",
+            betas * previous_cumulative_alphas.sqrt() / (1 - cumulative_alphas),
         )
         self.register_buffer(
-            "prediction_scale", betas / (1 - cumulative_alphas).sqrt()
+            "noisy_mean_scale",
+            (1 - previous_cumulative_alphas) * alphas.sqrt()
+            / (1 - cumulative_alphas),
         )
 
         # Use the schedule's fixed posterior variance for reverse-step sampling.
@@ -112,11 +115,17 @@ class Diffusion(nn.Module):
                     device="cuda",
                 )
 
-                # Predict the noise and calculate the reverse distribution's mean.
+                # Bound the estimated clean image, not the noisy sampling state.
                 predicted_noise = model(images, timesteps)
-                mean = self.reverse_scale[timestep] * (
-                    images
-                    - self.prediction_scale[timestep] * predicted_noise
+                predicted_clean = (
+                    images - self.noise_scale[timestep] * predicted_noise
+                ) / self.signal_scale[timestep]
+                predicted_clean = predicted_clean.clamp(-1, 1)
+
+                # Calculate the posterior mean from the bounded clean estimate.
+                mean = (
+                    self.clean_mean_scale[timestep] * predicted_clean
+                    + self.noisy_mean_scale[timestep] * images
                 )
 
                 # Sample a possible predecessor; the final step adds no noise.

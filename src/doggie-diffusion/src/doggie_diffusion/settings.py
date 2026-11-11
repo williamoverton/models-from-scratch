@@ -4,7 +4,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class ModelSettings:
-    feature_channels: tuple[int, ...] = (32, 64, 128, 128)
+    feature_channels: tuple[int, ...] = (64, 128, 256, 256)
     residual_blocks_per_stage: int = 2
     convolution_kernel_size: int = 3
     downsample_kernel_size: int = 3
@@ -24,7 +24,7 @@ class TrainingSettings:
         "/mnt/StorageBox/datasets/SDIP_dog/64x64"
     )
     image_size: int = 64
-    batch_size: int = 64
+    batch_size: int = 32
     learning_rate: float = 0.0002
     weight_decay: float = 0.0
     noise_levels: int = 1_000
