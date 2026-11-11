@@ -28,3 +28,9 @@ htmlcov/
 *.swo
 *~
 .DS_Store
+
+# Local dashboard logs
+/logs/
+
+# Local trained model checkpoints
+/trained-models/

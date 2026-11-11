@@ -39,3 +39,34 @@ Screen {
     border: round $primary;
     padding: 0 1;
 }
+
+#image-generation {
+    height: 16;
+    max-height: 45%;
+    margin: 0 2;
+}
+
+#preview-caption {
+    height: 1;
+    color: $text-muted;
+}
+
+#preview-images {
+    height: 1fr;
+}
+
+.preview-slot {
+    width: 1fr;
+    height: 1fr;
+    align: center top;
+}
+
+.preview-slot Static {
+    height: 1;
+    text-align: center;
+}
+
+.preview-slot Image {
+    width: auto;
+    height: auto;
+}

@@ -100,6 +100,13 @@ diagram maintenance instructions before working on diagrams.
 
 Keep code and comments focused on the current implementation.
 
+Give classes and functions a concise docstring at the top explaining their
+purpose. Include non-obvious input/output shapes or constraints where useful.
+
+Add a simple, concise comment before important logic steps explaining what
+the code does. Do not comment every line or obvious operation. Keep comments
+free of discussion or planning references.
+
 Comments explaining non-obvious math, intent, constraints, or invariants
 are useful. Historical explanations of previous implementations and
 past choices belong in the design log, not in the code.

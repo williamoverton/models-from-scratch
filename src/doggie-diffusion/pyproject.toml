@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "doggie-diffusion"
+version = "0.1.0"
+description = "A small diffusion model trained to generate dog images"
+requires-python = ">=3.12"
+dependencies = ["torch", "model-training", "pillow", "pyarrow", "numpy"]
+
+[project.scripts]
+doggie-diffusion = "doggie_diffusion.__main__:main"
+
+[tool.uv.sources]
+model-training = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/doggie_diffusion"]

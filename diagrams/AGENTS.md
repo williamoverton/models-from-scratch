@@ -16,6 +16,7 @@ Paths in this table are relative to this folder.
 | Diagram | Purpose | Related decision |
 | --- | --- | --- |
 | [single-neuron.tldraw](single-neuron.tldraw) | Explains the linear neuron calculation `ŷ = wx + b`, distinguishes input from learnable weight and bias, and shows the illustrative calculation `2 × 3 + 1 = 7`. No model implementation yet. | [Diagram format and workflow](../design-log/2026-11-10-editable-tldraw-diagrams.md) |
+| [doggie-diffusion-proposed-unet.tldraw](doggie-diffusion-proposed-unet.tldraw) | Two pages: **01 · U-Net overview**, with aligned resolution rows and color-coded paths; **02 · Inside a residual block**, with a vertical processing lane, routed shortcut, timestep branch, and terminology guide. Agreed operators within illustrative 64×64 network sizing; not implemented. | [Agreed network components](../design-log/2026-11-11-doggie-diffusion-network-components.md); [initial proposal](../design-log/2026-11-10-doggy-diffusion.md); [model documentation](../src/doggie-diffusion/README.md) |
 
 ## Maintenance
 

@@ -1,3 +1,5 @@
+from threading import Event
+
 import torch
 from torch import nn
 
@@ -11,8 +13,9 @@ def train(
     learning_rate: float,
     report_every: int,
     on_progress: ProgressCallback,
+    stop_event: Event,
 ) -> None:
-    """Train on y = 2x + 1 and publish progress after selected updates."""
+    """Train on y = 2x + 1 until complete or stopped, reporting selected updates."""
     device = torch.device("cuda")
     model.to(device)
     model.train()
@@ -24,6 +27,10 @@ def train(
     optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
 
     for step in range(1, steps + 1):
+        # Honor stop requests before starting another parameter update.
+        if stop_event.is_set():
+            break
+
         prediction = model(x)
         loss = loss_function(prediction, y)
 

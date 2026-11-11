@@ -1,4 +1,9 @@
+import logging
+import sys
+import termios
 from collections.abc import Callable
+from pathlib import Path
+from threading import Event
 
 from textual import work
 from textual.app import App, ComposeResult
@@ -6,6 +11,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.worker import WorkerCancelled, get_current_worker
 from textual.widgets import Footer, Header, RichLog, Sparkline, Static
 
+from model_training.preview import ImageGenerationPanel
 from model_training.progress import ProgressCallback, TrainingProgress
 
 
@@ -14,22 +20,64 @@ class TrainingApp(App):
     TITLE = "Models From Scratch"
     BINDINGS = [
         ("s", "start_training", "Start"),
+        ("x", "stop_training", "Stop"),
         ("q", "quit", "Quit"),
     ]
 
     def __init__(
         self,
-        train: Callable[[ProgressCallback], None],
+        train: Callable[[ProgressCallback, Event], None],
         *,
         title: str,
+        image_generation: bool = False,
+        log_path: Path = Path("logs/training.log"),
     ) -> None:
         super().__init__()
         self.train = train
         self.title = title
+        self.image_generation = image_generation
+        self.stop_event = Event()
+        self.quit_requested = False
+
+        # Append timestamped messages without sending logging output into the TUI.
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.file_logger = logging.Logger("model_training", level=logging.INFO)
+        self.log_handler = logging.FileHandler(log_path, encoding="utf-8")
+        self.log_handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+        )
+        self.file_logger.addHandler(self.log_handler)
+        self.file_logger.info("Dashboard opened: %s", title)
+
+    def run(self, **kwargs) -> None:
+        """Run the dashboard and restore the terminal's original input modes."""
+        terminal = sys.__stdin__
+        terminal_fd = (
+            terminal.fileno()
+            if terminal is not None and terminal.isatty()
+            else None
+        )
+        original_mode = (
+            termios.tcgetattr(terminal_fd) if terminal_fd is not None else None
+        )
+
+        try:
+            super().run(**kwargs)
+        finally:
+            # Restore echo, line buffering, and Enter handling after UI cleanup.
+            if terminal_fd is not None:
+                termios.tcsetattr(terminal_fd, termios.TCSANOW, original_mode)
+
+    def on_unmount(self) -> None:
+        """Close the file log when the dashboard exits."""
+        self.file_logger.info("Dashboard closed.")
+        self.log_handler.close()
 
     def compose(self) -> ComposeResult:
         """Build the dashboard without model-specific metric fields."""
         yield Header()
+        if self.image_generation:
+            yield ImageGenerationPanel(id="image-generation", classes="panel")
         with VerticalScroll(id="dashboard"):
             yield Static("Idle — press S to train.", id="status")
             with Vertical(id="metrics", classes="panel"):
@@ -48,21 +96,41 @@ class TrainingApp(App):
         self.query_one("#metrics").border_title = "Training progress"
         self.query_one("#loss-panel").border_title = "Loss history"
         self.query_one("#training-log").border_title = "Training log"
-        self.write_log("Ready: S starts a fresh training run.")
+        self.write_log("Ready: S starts training; X stops; Q stops and quits.")
 
     def action_start_training(self) -> None:
-        """Start a fresh experiment unless one is already running."""
+        """Start training unless a previous run is still active or stopping."""
         if self.training_running:
             return
         self.training_running = True
+        self.stop_event = Event()
+        self.quit_requested = False
         self.loss_history = []
         self.query_one("#loss-history", Sparkline).data = []
         self.query_one("#loss-caption", Static).update("No loss samples yet.")
         self.query_one("#step", Static).update("Step: —")
         self.query_one("#metric-values", Static).update("No metrics yet.")
+        if self.image_generation:
+            self.query_one(ImageGenerationPanel).reset_preview()
         self.set_status("Training…")
-        self.write_log("Starting a fresh training run.")
+        self.write_log("Starting training.")
         self.run_training()
+
+    def action_stop_training(self) -> None:
+        """Request cooperative shutdown without interrupting an update or save."""
+        if not self.training_running or self.stop_event.is_set():
+            return
+        self.stop_event.set()
+        self.set_status("Stopping…")
+        self.write_log("Stop requested; waiting for training to finish.")
+
+    def action_quit(self) -> None:
+        """Wait for active training to finish its shutdown before exiting."""
+        if not self.training_running:
+            self.exit()
+            return
+        self.quit_requested = True
+        self.action_stop_training()
 
     @work(thread=True, exclusive=True)
     def run_training(self) -> None:
@@ -75,10 +143,11 @@ class TrainingApp(App):
             self.call_from_thread(self.show_progress, progress)
 
         try:
-            self.train(report)
+            self.train(report, self.stop_event)
         except WorkerCancelled:
             return
         except Exception as error:
+            self.file_logger.exception("Training failed")
             if not worker.is_cancelled:
                 self.call_from_thread(self.finish_training, str(error))
         else:
@@ -88,12 +157,21 @@ class TrainingApp(App):
     def finish_training(self, error: str | None = None) -> None:
         """Display completion or failure and allow another run."""
         self.training_running = False
+        quit_requested = self.quit_requested
+        self.quit_requested = False
         if error is not None:
             self.set_status("Training failed — see log. Press S to retry.")
             self.write_log(f"Training failed: {error}")
+        elif self.stop_event.is_set():
+            self.set_status("Stopped — press S to train.")
+            self.write_log("Training stopped.")
         else:
-            self.set_status("Completed — press S for a fresh run.")
+            self.set_status("Completed — press S to train.")
             self.write_log("Training completed.")
+
+        # A training failure stays visible rather than disappearing on quit.
+        if quit_requested and error is None:
+            self.exit()
 
     def set_status(self, status: str) -> None:
         """Replace the current training status."""
@@ -101,9 +179,13 @@ class TrainingApp(App):
 
     def show_progress(self, progress: TrainingProgress) -> None:
         """Render named metrics and retain one loss sample per report."""
-        self.query_one("#step", Static).update(
-            f"Step: {progress.step:,} / {progress.total_steps:,}"
-        )
+        step_text = f"Step: {progress.step:,}"
+        if progress.total_steps is not None:
+            step_text += f" / {progress.total_steps:,}"
+        self.query_one("#step", Static).update(step_text)
+        # Image-generation models supply display-ready images through progress.
+        if self.image_generation and progress.preview is not None:
+            self.query_one(ImageGenerationPanel).show_preview(progress.preview)
         self.query_one("#metric-values", Static).update(
             "\n".join(f"{name}: {value:.6g}" for name, value in progress.metrics.items())
         )
@@ -119,5 +201,6 @@ class TrainingApp(App):
         )
 
     def write_log(self, message: str) -> None:
-        """Append a plain-text message to the scrollable log."""
+        """Append a message to both the file and the scrollable dashboard log."""
         self.query_one("#training-log", RichLog).write(message)
+        self.file_logger.info(message)

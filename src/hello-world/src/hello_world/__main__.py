@@ -1,4 +1,5 @@
 import argparse
+from threading import Event
 
 from model_training.app import TrainingApp
 from model_training.progress import ProgressCallback
@@ -7,7 +8,7 @@ from hello_world.model import create_model
 from hello_world.training import train
 
 
-def run_training(report: ProgressCallback) -> None:
+def run_training(report: ProgressCallback, stop_event: Event) -> None:
     """Create and train a fresh linear neuron for each dashboard run."""
     train(
         create_model(),
@@ -15,6 +16,7 @@ def run_training(report: ProgressCallback) -> None:
         learning_rate=0.01,
         report_every=20,
         on_progress=report,
+        stop_event=stop_event,
     )
 
 

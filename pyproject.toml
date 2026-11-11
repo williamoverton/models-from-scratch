@@ -3,13 +3,14 @@ name = "models-from-scratch"
 version = "0.1.0"
 description = "Learning how models work through small PyTorch projects"
 requires-python = ">=3.12"
-dependencies = ["hello-world"]
+dependencies = ["hello-world", "doggie-diffusion"]
 
 [tool.uv]
 package = false
 
 [tool.uv.workspace]
-members = ["src/hello-world", "libs/model-training"]
+members = ["src/hello-world", "src/doggie-diffusion", "libs/model-training"]
 
 [tool.uv.sources]
 hello-world = { workspace = true }
+doggie-diffusion = { workspace = true }
