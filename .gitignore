@@ -1,6 +1,7 @@
 # Local Python environments
 .venv/
 venv/
+.direnv/
 
 # Python bytecode and packaging output
 __pycache__/

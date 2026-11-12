@@ -119,7 +119,9 @@ class Diffusion(nn.Module):
                 )
 
                 # Bound the estimated clean image, not the noisy sampling state.
-                predicted_noise = model(images, timesteps)
+                with torch.autocast(device_type="cuda", dtype=torch.float16):
+                    predicted_noise = model(images, timesteps)
+                predicted_noise = predicted_noise.float()
                 predicted_clean = (
                     images - self.noise_scale[timestep] * predicted_noise
                 ) / self.signal_scale[timestep]

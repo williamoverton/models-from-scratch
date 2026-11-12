@@ -10,8 +10,9 @@ def save_checkpoint(
     model: nn.Module,
     optimizer: Optimizer,
     step: int,
+    scaler: torch.amp.GradScaler,
 ) -> None:
-    """Atomically save learned parameters, optimizer state, and completed step."""
+    """Atomically save model, optimizer, gradient scaler, and completed step."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
 
@@ -22,6 +23,7 @@ def save_checkpoint(
                 "model": model.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "step": step,
+                "scaler": scaler.state_dict(),
             },
             temporary,
         )
@@ -34,6 +36,7 @@ def load_checkpoint(
     path: Path,
     model: nn.Module,
     optimizer: Optimizer,
+    scaler: torch.amp.GradScaler,
 ) -> int:
     """Restore a saved run, or return step zero when no checkpoint exists."""
     if not path.exists():
@@ -43,4 +46,7 @@ def load_checkpoint(
     checkpoint = torch.load(path, map_location="cuda", weights_only=True)
     model.load_state_dict(checkpoint["model"])
     optimizer.load_state_dict(checkpoint["optimizer"])
+    # Runs saved before FP16 training start with a fresh gradient scaler.
+    if "scaler" in checkpoint:
+        scaler.load_state_dict(checkpoint["scaler"])
     return checkpoint["step"]

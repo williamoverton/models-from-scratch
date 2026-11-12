@@ -1,5 +1,7 @@
+from collections import deque
 from pathlib import Path
 from threading import Event
+from time import perf_counter
 
 import torch
 from PIL import Image
@@ -90,10 +92,13 @@ def train(
         lr=settings.learning_rate,
         weight_decay=settings.weight_decay,
     )
+    scaler = torch.amp.GradScaler("cuda")
 
     # Resume learned parameters and optimizer state when a save exists.
-    step = load_checkpoint(CHECKPOINT_PATH, model, optimizer)
+    step = load_checkpoint(CHECKPOINT_PATH, model, optimizer, scaler)
     model.train()
+    # Compile execution in place so checkpoint parameter names stay unchanged.
+    model.compile()
 
     # Read and decode images in CPU workers without forking CUDA state.
     dataset = DogImageDataset(
@@ -111,6 +116,9 @@ def train(
             "spawn" if settings.loading_workers > 0 else None
         ),
     )
+
+    step_durations: deque[float] = deque(maxlen=50)
+    step_started = perf_counter()
 
     # Make new passes through the dataset until the dashboard requests a stop.
     while not stop_event.is_set():
@@ -133,15 +141,22 @@ def train(
 
             # Predict the added noise and update the learned parameters.
             optimizer.zero_grad()
-            predicted_noise = model(noisy_images, timesteps)
-            loss = nn.functional.mse_loss(predicted_noise, noise)
-            loss.backward()
-            optimizer.step()
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                predicted_noise = model(noisy_images, timesteps)
+                loss = nn.functional.mse_loss(predicted_noise, noise)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             step += 1
+
+            # Wait for GPU completion before measuring loading and training time.
+            torch.cuda.synchronize()
+            step_durations.append(perf_counter() - step_started)
+            steps_per_second = len(step_durations) / sum(step_durations)
 
             # Save on its own schedule, independently of preview generation.
             if step % settings.checkpoint_interval == 0:
-                save_checkpoint(CHECKPOINT_PATH, model, optimizer, step)
+                save_checkpoint(CHECKPOINT_PATH, model, optimizer, step, scaler)
 
             # A scheduled preview also satisfies any pending manual request.
             preview = None
@@ -158,13 +173,18 @@ def train(
                 TrainingProgress(
                     step=step,
                     total_steps=None,
-                    metrics={"loss": loss.item()},
+                    metrics={
+                        "loss": loss.item(),
+                        "training steps/s": steps_per_second,
+                    },
                     preview=preview,
                 )
             )
+            # Exclude saving, generation, and reporting from the next step.
+            step_started = perf_counter()
 
     # Preserve the latest completed update before Stop or Quit returns.
-    save_checkpoint(CHECKPOINT_PATH, model, optimizer, step)
+    save_checkpoint(CHECKPOINT_PATH, model, optimizer, step, scaler)
 
 
 def generate_from_checkpoint() -> ImageGenerationPreview:
@@ -176,6 +196,7 @@ def generate_from_checkpoint() -> ImageGenerationPreview:
     model.load_state_dict(checkpoint["model"])
     step = checkpoint["step"]
     del checkpoint
+    model.compile()
     settings = TrainingSettings()
     diffusion = Diffusion(settings.noise_levels)
     return create_preview(

@@ -128,3 +128,42 @@ Stop/save behavior, checkpoint policy details, preview reproducibility,
 and dashboard integration still need review. Keep simple git-ignored
 model-directory storage. Continue reviewing each file with the user before
 writing it.
+
+## Throughput comparison instrumentation (2026-11-12)
+
+Before introducing BF16 mixed precision and `torch.compile`, report
+`training steps/s` through the existing dashboard metrics. Calculate throughput
+as completed steps divided by their summed durations over the last 50 steps
+of the current run. Include batch loading, device transfer, and training;
+explicitly synchronize CUDA at the end of each measured step. Exclude
+checkpoint saving, preview generation, and dashboard reporting.
+
+This measures training throughput, not total application throughput. The user
+observed approximately 5.95 steps/s for the FP32 baseline.
+
+## BF16 and compiled execution (2026-11-12)
+
+Use CUDA BF16 autocast for training predictions and loss, and for model
+predictions during generation. Keep stored model weights, optimizer state,
+training-noise construction, and reverse-diffusion arithmetic in FP32.
+Explicitly convert generated noise predictions back to FP32 before the reverse
+update. Backpropagation runs outside autocast; no gradient scaler is added.
+
+Call `model.compile()` after loading weights in both training and standalone
+generation. This uses PyTorch's default `torch.compile` execution path without
+wrapping the model or changing checkpoint keys. Keep architecture, batch size,
+optimizer, and throughput measurement unchanged.
+
+Compilation adds startup cost and may specialize separately for training and
+preview execution. Compare steady-state throughput after compilation has left
+the 50-step rolling window. The user will run the optimized comparison;
+runtime behavior and speedup have not yet been verified.
+
+## Isolate BF16 throughput (2026-11-12)
+
+Temporarily remove compilation from training and standalone generation while
+retaining BF16 autocast. This supersedes the compiled-execution portion above
+for the current comparison. Triton compilation failed because its GCC invocation
+could not find `Python.h`; environment repair is being handled separately.
+The user will measure BF16-only throughput against the 5.95 steps/s FP32
+baseline. No runtime verification of this change has been performed.
