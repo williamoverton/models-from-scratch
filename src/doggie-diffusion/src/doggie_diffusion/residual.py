@@ -38,21 +38,21 @@ class ResidualBlock(nn.Module):
             ),
         )
 
-        # Convert the shared timestep embedding into one offset per output channel.
+        # Predict one timestep-dependent scale and offset per output channel.
         self.timestep_projection = nn.Sequential(
             nn.SiLU(),
             nn.Linear(
                 settings.timestep_conditioning_width,
-                out_channels,
+                2 * out_channels,
                 device="cuda",
             ),
         )
 
-        # Process the conditioned features into a learned correction.
+        # Normalize before applying timestep-dependent scale and offset.
+        self.output_normalization = nn.GroupNorm(
+            settings.normalization_groups, out_channels, device="cuda"
+        )
         self.output_layers = nn.Sequential(
-            nn.GroupNorm(
-                settings.normalization_groups, out_channels, device="cuda"
-            ),
             nn.SiLU(),
             nn.Conv2d(
                 out_channels,
@@ -81,9 +81,11 @@ class ResidualBlock(nn.Module):
         # Extract features before adding noise-level information.
         correction = self.input_layers(features)
 
-        # Broadcast each timestep-derived channel offset across its spatial grid.
-        conditioning = self.timestep_projection(timestep_embedding)
-        correction = correction + conditioning[:, :, None, None]
+        # Modulate normalized features using the noise-level conditioning.
+        scale, offset = self.timestep_projection(timestep_embedding).chunk(2, dim=1)
+        correction = self.output_normalization(correction)
+        correction = correction * (1 + scale[:, :, None, None])
+        correction = correction + offset[:, :, None, None]
 
         # Turn the conditioned features into the residual correction.
         correction = self.output_layers(correction)

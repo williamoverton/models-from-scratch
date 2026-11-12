@@ -60,53 +60,56 @@ Dashboard messages and full training-failure tracebacks are appended to
 
 Model and training defaults live in
 `src/doggie_diffusion/settings.py`. Preview and checkpoint intervals are
-independent, both currently every 1,000 optimizer updates.
-The U-Net uses feature channels `(64, 128, 256, 256)`, with batch size 32,
+independent, both currently every 1,000 processed training batches.
+The U-Net uses feature channels `(96, 192, 384, 384)`, with batch size 32,
 in-process data loading (`loading_workers=0`), and AdamW at
 learning rate 0.0002 with zero weight decay. Add loading subprocesses only
 if measurements show data loading is a bottleneck. GPU memory use and
 throughput have not yet been measured.
 
+Each encoder residual block supplies a skip to a matching decoder residual
+block. With two blocks at each of the 64×64, 32×32, and 16×16 levels, this
+provides six skips. The decoder consumes them in reverse order, concatenating
+each skip before its block. The 8×8 bottleneck retains two residual blocks.
+See the [block-level skip decision](../../design-log/2026-11-12-doggie-diffusion-block-skips.md).
+
 Four-head spatial self-attention follows the 16×16 residual stages in both
-encoder and decoder. Each block normalizes the features, attends across all
-256 spatial positions, and adds a residual correction. The 8×8 bottleneck
-has no attention. `attention_level=2` selects this zero-based resolution level;
-`attention_heads=4` splits its 256 channels into 64 features per head.
-See the [attention decision](../../design-log/2026-11-12-doggie-diffusion-spatial-attention.md).
+encoder and decoder and the 8×8 bottleneck. These levels have 384 channels,
+with 96 features per head. Timestep conditioning applies a learned scale and
+offset after normalization in every residual block.
 
-The rolling checkpoint is `trained-models/doggie-diffusion/checkpoint.pt`,
-relative to the working directory. Resume restores model weights, optimizer
-state (including its saved learning rate), and completed step; data shuffling
-starts anew. Deleting that model directory starts fresh.
-The pre-attention model is preserved separately in
-`trained-models/doggie-diffusion-no-attention/`. Its weights do not match the
-attention architecture; the attention experiment starts fresh at the usual
-checkpoint path.
+The rolling checkpoint is
+`trained-models/doggie-diffusion-dense-skips/checkpoint.pt`, relative to the
+working directory. Resume restores model weights, optimizer state (including
+its saved learning rate), scaler, EMA, and processed step count; data shuffling
+starts anew. The denser-skip architecture starts fresh: previous checkpoints
+under `trained-models/doggie-diffusion/` remain untouched and are incompatible
+with the new decoder. Strict loading is retained; no weight migration is done.
+Quit and reopen an already-running dashboard to load the new architecture.
 
-Each preview displays two rows, each showing 100, 500, and 1,000 denoising
-steps: a fixed-seed generation (`42`) and a fresh random-seed generation.
-Both use dedicated CUDA generators without consuming training's random
-stream; the random row's seed is shown in its caption. Generation remains
-synchronous: training pauses for both rows.
+Each preview displays current and EMA weights using identical generation
+randomness with seed `42`, each showing 100, 500, and 1,000 denoising steps.
+Dedicated CUDA generators avoid consuming training's random stream.
+Generation remains synchronous: training pauses for both rows.
 
-Only scheduled previews save the fixed row's final image as
-`trained-models/doggie-diffusion/samples/generation-sample-{step}.png`,
-where `{step}` is the completed training step. The random row and G-triggered
-previews are display-only. If G coincides with a scheduled preview, the
-scheduled preview satisfies it and retains its normal fixed-image save.
+Only scheduled previews save the EMA row's final image as
+`trained-models/doggie-diffusion-dense-skips/samples/generation-sample-{step}.png`,
+where `{step}` is the processed training step. G-triggered previews are
+display-only. If G coincides with a scheduled preview, the scheduled preview
+satisfies it and retains its normal EMA-image save.
 Sample saving is independent of checkpoint saves; historical checkpoints
 are not retained. Repeating a scheduled training step overwrites its sample.
 
 ## Agreed training behavior
 
 - Begin with 64×64 images; reduce resolution if iteration is too slow.
-- Measure progress and run length in training steps (optimizer updates), not
-  epochs. Shuffle the training data.
+- Measure progress and run length in processed training batches, not epochs.
+  FP16 overflow skips still advance the step count. Shuffle the training data.
 - Load Parquet data in bounded portions and decode images as needed for
   batches; do not preload the complete dataset into RAM or GPU memory.
-- Every 1,000 training steps, display fixed and random generations, each with
-  snapshots after 100, 500, and 1,000 denoising steps, in the dashboard's
-  “Current model examples” section using textual-image.
+- Every 1,000 training steps, display current and EMA generations with matched
+  randomness, each with snapshots after 100, 500, and 1,000 denoising steps,
+  in the dashboard using textual-image.
 - Keep save/resume simple, with git-ignored `trained-models/{model-name}/`
   storage. Deleting the model directory starts over.
 

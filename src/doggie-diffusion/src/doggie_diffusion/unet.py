@@ -3,7 +3,7 @@ from torch import nn
 
 from .attention import SpatialAttention
 from .resampling import Downsample, Upsample
-from .residual import ResidualStage
+from .residual import ResidualBlock, ResidualStage
 from .settings import ModelSettings
 from .timestep import TimestepEmbedding
 
@@ -24,6 +24,8 @@ class UNet(nn.Module):
             raise ValueError("Processing kernel size must be positive and odd.")
         if not 0 <= settings.attention_level < len(channels) - 1:
             raise ValueError("Attention must select an encoder/decoder level.")
+        if settings.residual_blocks_per_stage < 1:
+            raise ValueError("Each stage needs at least one residual block.")
 
         padding = kernel_size // 2
         self.attention_level = settings.attention_level
@@ -51,14 +53,17 @@ class UNet(nn.Module):
             device="cuda",
         )
 
-        # Build an encoder stage and downsampling layer for each resolution.
+        # Keep encoder blocks explicit so each output can supply a skip.
         self.encoder_stages = nn.ModuleList()
         self.downsamples = nn.ModuleList()
 
         for level in range(len(channels) - 1):
             width = channels[level]
             self.encoder_stages.append(
-                ResidualStage(width, width, settings)
+                nn.ModuleList([
+                    ResidualBlock(width, width, settings)
+                    for _ in range(settings.residual_blocks_per_stage)
+                ])
             )
             self.downsamples.append(
                 Downsample(width, channels[level + 1], settings)
@@ -67,6 +72,11 @@ class UNet(nn.Module):
         # Process features at the smallest spatial resolution.
         self.bottleneck = ResidualStage(
             channels[-1], channels[-1], settings
+        )
+        self.bottleneck_attention = SpatialAttention(
+            channels[-1],
+            heads=settings.attention_heads,
+            normalization_groups=settings.normalization_groups,
         )
 
         # Build decoder stages from the deepest resolution to the shallowest.
@@ -77,15 +87,14 @@ class UNet(nn.Module):
         for width in reversed(channels[:-1]):
             self.upsamples.append(Upsample(current_channels, settings))
 
-            # Combine decoder and skip channels, then reduce to the stage width.
-            self.decoder_stages.append(
-                ResidualStage(
-                    current_channels + width,
-                    width,
-                    settings,
+            # Each decoder block consumes one same-resolution encoder skip.
+            blocks = nn.ModuleList()
+            for _ in range(settings.residual_blocks_per_stage):
+                blocks.append(
+                    ResidualBlock(current_channels + width, width, settings)
                 )
-            )
-            current_channels = width
+                current_channels = width
+            self.decoder_stages.append(blocks)
 
         # Predict three noise channels without restricting their value range.
         self.output_convolution = nn.Conv2d(
@@ -106,32 +115,35 @@ class UNet(nn.Module):
         timestep_embedding = self.timestep_embedding(timesteps)
         features = self.input_convolution(noisy_images)
 
-        # Save each encoder stage's features before downsampling.
+        # Save every encoder block output, including attention on the final block.
         encoder_features = []
         for level, (stage, downsample) in enumerate(zip(
             self.encoder_stages,
             self.downsamples,
             strict=True,
         )):
-            features = stage(features, timestep_embedding)
-            if level == self.attention_level:
-                features = self.encoder_attention(features)
-            encoder_features.append(features)
+            for index, block in enumerate(stage):
+                features = block(features, timestep_embedding)
+                if level == self.attention_level and index == len(stage) - 1:
+                    features = self.encoder_attention(features)
+                encoder_features.append(features)
             features = downsample(features)
 
         # Process the smallest feature grids.
         features = self.bottleneck(features, timestep_embedding)
+        features = self.bottleneck_attention(features)
 
-        # Restore resolution and combine matching encoder features.
-        for index, (upsample, stage, skip) in enumerate(zip(
+        # Consume skips in reverse block order at each restored resolution.
+        for index, (upsample, stage) in enumerate(zip(
             self.upsamples,
             self.decoder_stages,
-            reversed(encoder_features),
             strict=True,
         )):
             features = upsample(features)
-            features = torch.cat((features, skip), dim=1)
-            features = stage(features, timestep_embedding)
+            for block in stage:
+                skip = encoder_features.pop()
+                features = torch.cat((features, skip), dim=1)
+                features = block(features, timestep_embedding)
             level = len(self.decoder_stages) - 1 - index
             if level == self.attention_level:
                 features = self.decoder_attention(features)

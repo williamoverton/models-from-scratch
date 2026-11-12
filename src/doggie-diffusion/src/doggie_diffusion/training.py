@@ -6,6 +6,7 @@ from time import perf_counter
 import torch
 from PIL import Image
 from torch import nn
+from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torch.utils.data import DataLoader
 
 from model_training.progress import (
@@ -22,28 +23,29 @@ from .settings import ModelSettings, TrainingSettings
 from .unet import UNet
 
 
-CHECKPOINT_PATH = Path("trained-models/doggie-diffusion/checkpoint.pt")
+CHECKPOINT_PATH = Path("trained-models/doggie-diffusion-dense-skips/checkpoint.pt")
 PREVIEW_STEPS = (100, 500, 1_000)
 PREVIEW_SEED = 42
+EMA_DECAY = 0.999
 
 
 def create_preview(
     model: UNet,
+    ema_model: UNet,
     diffusion: Diffusion,
     image_size: int,
     step: int,
     *,
     save_sample: bool,
 ) -> ImageGenerationPreview:
-    """Generate fixed and random rows; optionally save only the fixed result."""
+    """Compare current and EMA weights with identical generation randomness."""
     rows = []
-    for seed in (PREVIEW_SEED, None):
-        # Keep both preview streams separate from training randomness.
+    for title, sampling_model in (("Current weights", model), ("EMA weights", ema_model)):
+        # Reset all sampling randomness so only the model weights differ.
         generator = torch.Generator(device="cuda")
-        actual_seed = generator.seed() if seed is None else seed
-        generator.manual_seed(actual_seed)
+        generator.manual_seed(PREVIEW_SEED)
         snapshots = diffusion.sample(
-            model,
+            sampling_model,
             batch_size=1,
             image_size=image_size,
             snapshot_steps=PREVIEW_STEPS,
@@ -58,13 +60,13 @@ def create_preview(
             pixels = pixels.permute(1, 2, 0).contiguous().cpu()
             images.append(Image.fromarray(pixels.numpy()))
 
-        if save_sample and seed is not None:
+        if save_sample and sampling_model is ema_model:
             samples_directory = CHECKPOINT_PATH.parent / "samples"
             samples_directory.mkdir(parents=True, exist_ok=True)
             images[-1].save(samples_directory / f"generation-sample-{step}.png")
 
         rows.append(ImageGenerationRow(
-            title=f"{'Fixed' if seed is not None else 'Random'} seed: {actual_seed}",
+            title=f"{title} — seed: {PREVIEW_SEED}",
             images=(images[0], images[1], images[2]),
             labels=(
                 "After 100 denoising steps",
@@ -93,12 +95,16 @@ def train(
         weight_decay=settings.weight_decay,
     )
     scaler = torch.amp.GradScaler("cuda")
+    ema_model = AveragedModel(
+        model, multi_avg_fn=get_ema_multi_avg_fn(EMA_DECAY)
+    )
 
     # Resume learned parameters and optimizer state when a save exists.
-    step = load_checkpoint(CHECKPOINT_PATH, model, optimizer, scaler)
+    step = load_checkpoint(CHECKPOINT_PATH, model, optimizer, scaler, ema_model)
     model.train()
     # Compile execution in place so checkpoint parameter names stay unchanged.
     model.compile()
+    ema_model.module.compile()
 
     # Read and decode images in CPU workers without forking CUDA state.
     dataset = DogImageDataset(
@@ -118,6 +124,8 @@ def train(
     )
 
     step_durations: deque[float] = deque(maxlen=50)
+    processed_batches = 0
+    overflow_skips = 0
     step_started = perf_counter()
 
     # Make new passes through the dataset until the dashboard requests a stop.
@@ -145,8 +153,15 @@ def train(
                 predicted_noise = model(noisy_images, timesteps)
                 loss = nn.functional.mse_loss(predicted_noise, noise)
             scaler.scale(loss).backward()
+            previous_scale = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
+            # A reduced scale means overflow skipped the optimizer update.
+            overflow_skipped = scaler.get_scale() < previous_scale
+            processed_batches += 1
+            overflow_skips += int(overflow_skipped)
+            if not overflow_skipped:
+                ema_model.update_parameters(model)
             step += 1
 
             # Wait for GPU completion before measuring loading and training time.
@@ -156,7 +171,9 @@ def train(
 
             # Save on its own schedule, independently of preview generation.
             if step % settings.checkpoint_interval == 0:
-                save_checkpoint(CHECKPOINT_PATH, model, optimizer, step, scaler)
+                save_checkpoint(
+                    CHECKPOINT_PATH, model, optimizer, step, scaler, ema_model
+                )
 
             # A scheduled preview also satisfies any pending manual request.
             preview = None
@@ -164,7 +181,7 @@ def train(
             if not stop_event.is_set() and (scheduled or generation_request.is_set()):
                 generation_request.clear()
                 preview = create_preview(
-                    model, diffusion, settings.image_size, step,
+                    model, ema_model.module, diffusion, settings.image_size, step,
                     save_sample=scheduled,
                 )
 
@@ -176,6 +193,10 @@ def train(
                     metrics={
                         "loss": loss.item(),
                         "training steps/s": steps_per_second,
+                        "overflow skips (this run)": overflow_skips,
+                        "overflow skip % (this run)": (
+                            100 * overflow_skips / processed_batches
+                        ),
                     },
                     preview=preview,
                 )
@@ -184,7 +205,7 @@ def train(
             step_started = perf_counter()
 
     # Preserve the latest completed update before Stop or Quit returns.
-    save_checkpoint(CHECKPOINT_PATH, model, optimizer, step, scaler)
+    save_checkpoint(CHECKPOINT_PATH, model, optimizer, step, scaler, ema_model)
 
 
 def generate_from_checkpoint() -> ImageGenerationPreview:
@@ -194,11 +215,19 @@ def generate_from_checkpoint() -> ImageGenerationPreview:
     model = UNet(ModelSettings())
     checkpoint = torch.load(CHECKPOINT_PATH, map_location="cuda", weights_only=True)
     model.load_state_dict(checkpoint["model"])
+    ema_model = AveragedModel(
+        model, multi_avg_fn=get_ema_multi_avg_fn(EMA_DECAY)
+    )
+    if "ema_model" in checkpoint:
+        ema_model.load_state_dict(checkpoint["ema_model"])
+    else:
+        ema_model.update_parameters(model)
     step = checkpoint["step"]
     del checkpoint
     model.compile()
+    ema_model.module.compile()
     settings = TrainingSettings()
     diffusion = Diffusion(settings.noise_levels)
     return create_preview(
-        model, diffusion, settings.image_size, step, save_sample=False
+        model, ema_model.module, diffusion, settings.image_size, step, save_sample=False
     )

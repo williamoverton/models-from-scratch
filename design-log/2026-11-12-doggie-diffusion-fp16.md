@@ -28,6 +28,13 @@ The step counter continues counting training batches, including batches where
 the scaler skips an optimizer update due to non-finite gradients. Throughput
 therefore measures processed training steps, not guaranteed parameter updates.
 
+Report `overflow skips (this run)` and `overflow skip % (this run)` through
+the existing dashboard metrics and file log. Count a skip when the scaler
+reduces its scale after an attempted update, using the same condition that
+guards EMA updates. Divide skips by all processed batches since this training
+invocation began, including skipped batches. Both counters reset on each
+start/resume; they are not checkpointed and do not describe earlier training.
+
 ## Verification
 
 The user ran FP16 training and observed approximately 7.5 steps/s, compared

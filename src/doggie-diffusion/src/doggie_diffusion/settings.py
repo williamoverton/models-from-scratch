@@ -4,7 +4,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class ModelSettings:
-    feature_channels: tuple[int, ...] = (64, 128, 256, 256)
+    feature_channels: tuple[int, ...] = (96, 192, 384, 384)
     residual_blocks_per_stage: int = 2
     convolution_kernel_size: int = 3
     downsample_kernel_size: int = 3
