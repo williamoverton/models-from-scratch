@@ -88,6 +88,8 @@ class Diffusion(nn.Module):
         batch_size: int,
         image_size: int,
         snapshot_steps: tuple[int, ...] = (100, 500, 1_000),
+        *,
+        generator: torch.Generator,
     ) -> dict[int, torch.Tensor]:
         """Return CUDA image snapshots keyed by completed reverse-step counts."""
         if any(
@@ -98,7 +100,8 @@ class Diffusion(nn.Module):
 
         # Begin with independent Gaussian noise for every image.
         images = torch.randn(
-            batch_size, 3, image_size, image_size, device="cuda"
+            batch_size, 3, image_size, image_size,
+            device="cuda", generator=generator,
         )
         snapshots = {}
 
@@ -133,7 +136,12 @@ class Diffusion(nn.Module):
                     images = (
                         mean
                         + self.posterior_std[timestep]
-                        * torch.randn_like(images)
+                        * torch.randn(
+                            images.shape,
+                            dtype=images.dtype,
+                            device=images.device,
+                            generator=generator,
+                        )
                     )
                 else:
                     images = mean

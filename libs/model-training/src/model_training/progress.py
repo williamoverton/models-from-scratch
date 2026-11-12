@@ -5,15 +5,20 @@ from PIL.Image import Image
 
 
 @dataclass(frozen=True)
-class ImageGenerationPreview:
-    """Three labeled images from one model example at a completed training step.
+class ImageGenerationRow:
+    """Three labeled snapshots; published images must not be modified."""
 
-    Published images must not be modified after handing them to the dashboard.
-    """
-
-    step: int
+    title: str
     images: tuple[Image, Image, Image]
     labels: tuple[str, str, str]
+
+
+@dataclass(frozen=True)
+class ImageGenerationPreview:
+    """Two model-provided generation rows at a completed training step."""
+
+    step: int
+    rows: tuple[ImageGenerationRow, ImageGenerationRow]
 
 
 @dataclass(frozen=True)

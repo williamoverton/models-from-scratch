@@ -14,6 +14,8 @@ class ModelSettings:
     normalization_groups: int = 8
     timestep_encoding_width: int = 128
     timestep_conditioning_width: int = 128
+    attention_level: int = 2
+    attention_heads: int = 4
 
 
 @dataclass(frozen=True)
@@ -31,5 +33,5 @@ class TrainingSettings:
     loading_workers: int = 0
     shuffle_buffer_size: int = 1_024
     read_batch_size: int = 128
-    preview_interval: int = 100
+    preview_interval: int = 1000
     checkpoint_interval: int = 1_000

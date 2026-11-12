@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 
 from model_training.progress import (
     ImageGenerationPreview,
+    ImageGenerationRow,
     ProgressCallback,
     TrainingProgress,
 )
@@ -21,6 +22,7 @@ from .unet import UNet
 
 CHECKPOINT_PATH = Path("trained-models/doggie-diffusion/checkpoint.pt")
 PREVIEW_STEPS = (100, 500, 1_000)
+PREVIEW_SEED = 42
 
 
 def create_preview(
@@ -28,32 +30,48 @@ def create_preview(
     diffusion: Diffusion,
     image_size: int,
     step: int,
+    *,
+    save_sample: bool,
 ) -> ImageGenerationPreview:
-    """Generate one example and convert its three snapshots to display images."""
-    snapshots = diffusion.sample(
-        model,
-        batch_size=1,
-        image_size=image_size,
-        snapshot_steps=PREVIEW_STEPS,
-    )
+    """Generate fixed and random rows; optionally save only the fixed result."""
+    rows = []
+    for seed in (PREVIEW_SEED, None):
+        # Keep both preview streams separate from training randomness.
+        generator = torch.Generator(device="cuda")
+        actual_seed = generator.seed() if seed is None else seed
+        generator.manual_seed(actual_seed)
+        snapshots = diffusion.sample(
+            model,
+            batch_size=1,
+            image_size=image_size,
+            snapshot_steps=PREVIEW_STEPS,
+            generator=generator,
+        )
 
-    # Convert model-range RGB tensors to CPU byte arrays for Pillow.
-    images = []
-    for sampling_step in PREVIEW_STEPS:
-        pixels = snapshots[sampling_step][0].clamp(-1, 1)
-        pixels = ((pixels + 1) * 127.5).round().to(torch.uint8)
-        pixels = pixels.permute(1, 2, 0).contiguous().cpu()
-        images.append(Image.fromarray(pixels.numpy()))
+        # Convert model-range RGB tensors to CPU byte arrays for Pillow.
+        images = []
+        for sampling_step in PREVIEW_STEPS:
+            pixels = snapshots[sampling_step][0].clamp(-1, 1)
+            pixels = ((pixels + 1) * 127.5).round().to(torch.uint8)
+            pixels = pixels.permute(1, 2, 0).contiguous().cpu()
+            images.append(Image.fromarray(pixels.numpy()))
 
-    return ImageGenerationPreview(
-        step=step,
-        images=(images[0], images[1], images[2]),
-        labels=(
-            "After 100 denoising steps",
-            "After 500 denoising steps",
-            "After 1,000 denoising steps",
-        ),
-    )
+        if save_sample and seed is not None:
+            samples_directory = CHECKPOINT_PATH.parent / "samples"
+            samples_directory.mkdir(parents=True, exist_ok=True)
+            images[-1].save(samples_directory / f"generation-sample-{step}.png")
+
+        rows.append(ImageGenerationRow(
+            title=f"{'Fixed' if seed is not None else 'Random'} seed: {actual_seed}",
+            images=(images[0], images[1], images[2]),
+            labels=(
+                "After 100 denoising steps",
+                "After 500 denoising steps",
+                "After 1,000 denoising steps",
+            ),
+        ))
+
+    return ImageGenerationPreview(step=step, rows=(rows[0], rows[1]))
 
 
 def train(
@@ -62,6 +80,7 @@ def train(
     *,
     model_settings: ModelSettings,
     settings: TrainingSettings,
+    generation_request: Event,
 ) -> None:
     """Train continuously, report progress, and save before a normal stop."""
     model = UNet(model_settings)
@@ -124,14 +143,14 @@ def train(
             if step % settings.checkpoint_interval == 0:
                 save_checkpoint(CHECKPOINT_PATH, model, optimizer, step)
 
-            # Let a requested stop skip starting another expensive preview.
+            # A scheduled preview also satisfies any pending manual request.
             preview = None
-            if (
-                not stop_event.is_set()
-                and step % settings.preview_interval == 0
-            ):
+            scheduled = step % settings.preview_interval == 0
+            if not stop_event.is_set() and (scheduled or generation_request.is_set()):
+                generation_request.clear()
                 preview = create_preview(
-                    model, diffusion, settings.image_size, step
+                    model, diffusion, settings.image_size, step,
+                    save_sample=scheduled,
                 )
 
             # Publish the completed update and any newly generated example.
@@ -146,3 +165,19 @@ def train(
 
     # Preserve the latest completed update before Stop or Quit returns.
     save_checkpoint(CHECKPOINT_PATH, model, optimizer, step)
+
+
+def generate_from_checkpoint() -> ImageGenerationPreview:
+    """Generate display-only rows from saved weights without starting training."""
+    if not CHECKPOINT_PATH.exists():
+        raise FileNotFoundError("No checkpoint yet; start training before generating.")
+    model = UNet(ModelSettings())
+    checkpoint = torch.load(CHECKPOINT_PATH, map_location="cuda", weights_only=True)
+    model.load_state_dict(checkpoint["model"])
+    step = checkpoint["step"]
+    del checkpoint
+    settings = TrainingSettings()
+    diffusion = Diffusion(settings.noise_levels)
+    return create_preview(
+        model, diffusion, settings.image_size, step, save_sample=False
+    )

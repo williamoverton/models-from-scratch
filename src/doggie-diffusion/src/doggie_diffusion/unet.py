@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 
+from .attention import SpatialAttention
 from .resampling import Downsample, Upsample
 from .residual import ResidualStage
 from .settings import ModelSettings
@@ -21,8 +22,24 @@ class UNet(nn.Module):
             raise ValueError("The U-Net needs at least two channel levels.")
         if kernel_size < 1 or kernel_size % 2 == 0:
             raise ValueError("Processing kernel size must be positive and odd.")
+        if not 0 <= settings.attention_level < len(channels) - 1:
+            raise ValueError("Attention must select an encoder/decoder level.")
 
         padding = kernel_size // 2
+        self.attention_level = settings.attention_level
+
+        # Use independent attention weights at the matching encoder/decoder level.
+        attention_channels = channels[self.attention_level]
+        self.encoder_attention = SpatialAttention(
+            attention_channels,
+            heads=settings.attention_heads,
+            normalization_groups=settings.normalization_groups,
+        )
+        self.decoder_attention = SpatialAttention(
+            attention_channels,
+            heads=settings.attention_heads,
+            normalization_groups=settings.normalization_groups,
+        )
 
         # Encode noise levels and convert RGB inputs into feature channels.
         self.timestep_embedding = TimestepEmbedding(settings)
@@ -91,12 +108,14 @@ class UNet(nn.Module):
 
         # Save each encoder stage's features before downsampling.
         encoder_features = []
-        for stage, downsample in zip(
+        for level, (stage, downsample) in enumerate(zip(
             self.encoder_stages,
             self.downsamples,
             strict=True,
-        ):
+        )):
             features = stage(features, timestep_embedding)
+            if level == self.attention_level:
+                features = self.encoder_attention(features)
             encoder_features.append(features)
             features = downsample(features)
 
@@ -104,15 +123,18 @@ class UNet(nn.Module):
         features = self.bottleneck(features, timestep_embedding)
 
         # Restore resolution and combine matching encoder features.
-        for upsample, stage, skip in zip(
+        for index, (upsample, stage, skip) in enumerate(zip(
             self.upsamples,
             self.decoder_stages,
             reversed(encoder_features),
             strict=True,
-        ):
+        )):
             features = upsample(features)
             features = torch.cat((features, skip), dim=1)
             features = stage(features, timestep_embedding)
+            level = len(self.decoder_stages) - 1 - index
+            if level == self.attention_level:
+                features = self.decoder_attention(features)
 
         # Convert the final features into RGB-channel noise estimates.
         return self.output_convolution(features)

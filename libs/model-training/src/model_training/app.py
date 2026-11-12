@@ -12,7 +12,7 @@ from textual.worker import WorkerCancelled, get_current_worker
 from textual.widgets import Footer, Header, RichLog, Sparkline, Static
 
 from model_training.preview import ImageGenerationPanel
-from model_training.progress import ProgressCallback, TrainingProgress
+from model_training.progress import ImageGenerationPreview, ProgressCallback, TrainingProgress
 
 
 class TrainingApp(App):
@@ -21,6 +21,7 @@ class TrainingApp(App):
     BINDINGS = [
         ("s", "start_training", "Start"),
         ("x", "stop_training", "Stop"),
+        ("g", "generate", "Generate"),
         ("q", "quit", "Quit"),
     ]
 
@@ -31,6 +32,8 @@ class TrainingApp(App):
         title: str,
         image_generation: bool = False,
         log_path: Path = Path("logs/training.log"),
+        generate: Callable[[], ImageGenerationPreview] | None = None,
+        generation_request: Event | None = None,
     ) -> None:
         super().__init__()
         self.train = train
@@ -38,6 +41,9 @@ class TrainingApp(App):
         self.image_generation = image_generation
         self.stop_event = Event()
         self.quit_requested = False
+        self.generate = generate
+        self.generation_request = generation_request
+        self.generation_running = False
 
         # Append timestamped messages without sending logging output into the TUI.
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,11 +106,13 @@ class TrainingApp(App):
 
     def action_start_training(self) -> None:
         """Start training unless a previous run is still active or stopping."""
-        if self.training_running:
+        if self.training_running or self.generation_running:
             return
         self.training_running = True
         self.stop_event = Event()
         self.quit_requested = False
+        if self.generation_request is not None:
+            self.generation_request.clear()
         self.loss_history = []
         self.query_one("#loss-history", Sparkline).data = []
         self.query_one("#loss-caption", Static).update("No loss samples yet.")
@@ -124,8 +132,61 @@ class TrainingApp(App):
         self.set_status("Stopping…")
         self.write_log("Stop requested; waiting for training to finish.")
 
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Expose generation only for apps that supply generation callbacks."""
+        if action == "generate":
+            return self.generate is not None and self.generation_request is not None
+        return True
+
+    def action_generate(self) -> None:
+        """Queue a training preview or generate from a checkpoint while idle."""
+        if self.generate is None or self.generation_request is None:
+            return
+        if self.generation_running:
+            return
+        if self.training_running:
+            if not self.stop_event.is_set():
+                self.generation_request.set()
+                self.write_log("Display-only generation requested.")
+            return
+        self.generation_running = True
+        self.set_status("Generating from checkpoint…")
+        self.run_generation()
+
+    @work(thread=True, group="generation", exclusive=True)
+    def run_generation(self) -> None:
+        """Generate off the UI thread without changing the saved model."""
+        try:
+            preview = self.generate()
+        except Exception as error:
+            self.file_logger.exception("Generation failed")
+            self.call_from_thread(self.finish_generation, None, str(error))
+        else:
+            self.call_from_thread(self.finish_generation, preview, None)
+
+    def finish_generation(
+        self, preview: ImageGenerationPreview | None, error: str | None
+    ) -> None:
+        """Publish the generated images and release idle generation controls."""
+        self.generation_running = False
+        if error is not None:
+            self.quit_requested = False
+            self.set_status("Generation failed — see log. Press G to retry.")
+            self.write_log(f"Generation failed: {error}")
+            return
+        if preview is not None:
+            self.query_one(ImageGenerationPanel).show_preview(preview)
+            self.write_log(f"Generated display-only samples at step {preview.step}.")
+        self.set_status("Stopped — press S to train or G to generate.")
+        if self.quit_requested:
+            self.exit()
+
     def action_quit(self) -> None:
         """Wait for active training to finish its shutdown before exiting."""
+        if self.generation_running:
+            self.quit_requested = True
+            self.set_status("Waiting for generation before quitting…")
+            return
         if not self.training_running:
             self.exit()
             return

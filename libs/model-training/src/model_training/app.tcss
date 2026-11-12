@@ -41,8 +41,8 @@ Screen {
 }
 
 #image-generation {
-    height: 16;
-    max-height: 45%;
+    height: 30;
+    max-height: 75%;
     margin: 0 2;
 }
 
@@ -51,8 +51,13 @@ Screen {
     color: $text-muted;
 }
 
-#preview-images {
+.preview-images {
     height: 1fr;
+}
+
+.preview-row-title {
+    height: 1;
+    color: $text-muted;
 }
 
 .preview-slot {

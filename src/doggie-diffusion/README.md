@@ -2,8 +2,14 @@
 
 A learning-first pixel-space diffusion model for generating random 64×64 RGB
 dog images from scratch on a single RTX 2080. Training uses all 126,841 images
-from the prepared dataset. The implementation is wired up but has not yet
-been exercised end to end.
+from the prepared dataset.
+
+## Training example
+
+Dashboard preview at **50,000 training steps**, showing one generation after
+100, 500, and 1,000 denoising steps.
+
+![Doggie Diffusion at training step 50,000: noise progressively becomes a recognizable dog.](training-step-50000.png)
 
 ## Prepare the dataset
 
@@ -38,9 +44,14 @@ From the repository root, with an NVIDIA GPU and CUDA available to PyTorch:
 uv run doggie-diffusion
 ```
 
-Press **S** to start or resume, **X** to stop, and **Q** to stop and quit.
+Press **S** to start or resume, **X** to stop, **G** to generate display-only
+samples, and **Q** to stop and quit. During training, G queues generation after
+the current update; while stopped, it generates from the saved checkpoint.
+A checkpoint must exist for stopped generation. Repeated requests are
+coalesced while waiting; only one generation runs at a time.
 Training continues until stopped. A preview already in progress finishes
-before shutdown; then the latest completed update is saved.
+before shutdown; then the latest completed update is saved. Stopping does
+not trigger an additional sample.
 The shared dashboard restores the terminal's original input settings after
 its run finishes, including when an exception unwinds the application.
 
@@ -49,17 +60,42 @@ Dashboard messages and full training-failure tracebacks are appended to
 
 Model and training defaults live in
 `src/doggie_diffusion/settings.py`. Preview and checkpoint intervals are
-independent: previews every 100 optimizer updates and checkpoints every 1,000.
+independent, both currently every 1,000 optimizer updates.
 The U-Net uses feature channels `(64, 128, 256, 256)`, with batch size 32,
 in-process data loading (`loading_workers=0`), and AdamW at
 learning rate 0.0002 with zero weight decay. Add loading subprocesses only
 if measurements show data loading is a bottleneck. GPU memory use and
 throughput have not yet been measured.
 
+Four-head spatial self-attention follows the 16×16 residual stages in both
+encoder and decoder. Each block normalizes the features, attends across all
+256 spatial positions, and adds a residual correction. The 8×8 bottleneck
+has no attention. `attention_level=2` selects this zero-based resolution level;
+`attention_heads=4` splits its 256 channels into 64 features per head.
+See the [attention decision](../../design-log/2026-11-12-doggie-diffusion-spatial-attention.md).
+
 The rolling checkpoint is `trained-models/doggie-diffusion/checkpoint.pt`,
 relative to the working directory. Resume restores model weights, optimizer
 state (including its saved learning rate), and completed step; data shuffling
 starts anew. Deleting that model directory starts fresh.
+The pre-attention model is preserved separately in
+`trained-models/doggie-diffusion-no-attention/`. Its weights do not match the
+attention architecture; the attention experiment starts fresh at the usual
+checkpoint path.
+
+Each preview displays two rows, each showing 100, 500, and 1,000 denoising
+steps: a fixed-seed generation (`42`) and a fresh random-seed generation.
+Both use dedicated CUDA generators without consuming training's random
+stream; the random row's seed is shown in its caption. Generation remains
+synchronous: training pauses for both rows.
+
+Only scheduled previews save the fixed row's final image as
+`trained-models/doggie-diffusion/samples/generation-sample-{step}.png`,
+where `{step}` is the completed training step. The random row and G-triggered
+previews are display-only. If G coincides with a scheduled preview, the
+scheduled preview satisfies it and retains its normal fixed-image save.
+Sample saving is independent of checkpoint saves; historical checkpoints
+are not retained. Repeating a scheduled training step overwrites its sample.
 
 ## Agreed training behavior
 
@@ -68,9 +104,9 @@ starts anew. Deleting that model directory starts fresh.
   epochs. Shuffle the training data.
 - Load Parquet data in bounded portions and decode images as needed for
   batches; do not preload the complete dataset into RAM or GPU memory.
-- Every 1,000 training steps, display snapshots after 100, 500, and 1,000
-  denoising steps of the same generation in the dashboard's “Current model
-  example” section, using textual-image.
+- Every 1,000 training steps, display fixed and random generations, each with
+  snapshots after 100, 500, and 1,000 denoising steps, in the dashboard's
+  “Current model examples” section using textual-image.
 - Keep save/resume simple, with git-ignored `trained-models/{model-name}/`
   storage. Deleting the model directory starts over.
 
