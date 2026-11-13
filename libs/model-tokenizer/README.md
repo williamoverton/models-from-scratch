@@ -4,7 +4,7 @@ A shared, dependency-free byte-level BPE (byte-pair encoding) tokenizer for the
 repository's text models. Each model trains its own vocabulary and chooses its
 own control tokens.
 
-## Run the learning example
+## Train the TinyStories tokenizer
 
 From the repository root:
 
@@ -12,10 +12,21 @@ From the repository root:
 uv run --package model-tokenizer python scripts/train-simple-english-tokenizer.py
 ```
 
-The script trains on a tiny text sample, prints token IDs and decoding examples,
-and saves and reloads `trained-models/tokenizers/simple-english.json`. Re-running
-replaces that artifact. The sample demonstrates the API; it does not produce a
-useful general English vocabulary.
+The script reads the full TinyStories V2 training split from
+`/mnt/StorageBox/datasets/TinyStories/TinyStoriesV2-GPT4-train.txt`. It streams
+complete stories rather than loading the whole corpus into memory, excluding
+the dataset's `<|endoftext|>` separator lines from ordinary-text training.
+Validation text is not used.
+
+The vocabulary target is **2,048 total tokens**, including the 256 base bytes
+and the single registered control token, `<END_OF_DOCUMENT>`. Future model-data
+formatting should explicitly insert that control ID after each story.
+
+The script reports story counts and training time, saves and reloads
+`trained-models/tokenizers/simple-english.json`, and prints the tokenization of
+a short example with and without the document boundary. Re-running replaces
+that artifact. Dataset location, vocabulary target, and output path are constants
+near the top of the script.
 
 ## Train and save a tokenizer
 

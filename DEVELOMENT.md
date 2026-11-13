@@ -60,14 +60,17 @@ control-token choices, and sequence formatting to its consumers.
 ## Learning experiments
 
 Small console experiments remain in `scripts/` for learning and future reference.
-Run them from the repository root. For the tokenizer training example:
+Run them from the repository root. To train the tokenizer on TinyStories V2:
 
 ```bash
 uv run --package model-tokenizer python scripts/train-simple-english-tokenizer.py
 ```
 
-It replaces `trained-models/tokenizers/simple-english.json` when re-run. See the
-[tokenizer guide](libs/model-tokenizer/README.md) for what it demonstrates.
+This reads the full training text from `/mnt/StorageBox/datasets/TinyStories/`
+and trains a 2,048-token vocabulary. It replaces
+`trained-models/tokenizers/simple-english.json` when re-run. See the
+[tokenizer guide](libs/model-tokenizer/README.md) for dataset boundaries,
+control-token handling, and script settings.
 
 For Hello World's command-line options:
 
