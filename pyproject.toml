@@ -3,14 +3,15 @@ name = "models-from-scratch"
 version = "0.1.0"
 description = "Learning how models work through small PyTorch projects"
 requires-python = ">=3.12"
-dependencies = ["hello-world", "doggie-diffusion"]
+dependencies = ["hello-world", "doggie-diffusion", "model-tokenizer"]
 
 [tool.uv]
 package = false
 
 [tool.uv.workspace]
-members = ["src/hello-world", "src/doggie-diffusion", "libs/model-training"]
+members = ["src/hello-world", "src/doggie-diffusion", "libs/model-training", "libs/model-tokenizer"]
 
 [tool.uv.sources]
 hello-world = { workspace = true }
 doggie-diffusion = { workspace = true }
+model-tokenizer = { workspace = true }

@@ -82,13 +82,29 @@ Read relevant design-log entries before revisiting an existing choice.
 If a decision changes, add a new entry referencing the previous one;
 preserve the history.
 
-# README
+# Documentation layout
 
-Keep `README.md` focused on important, high-level information that helps a
-human understand the repository and how to use it. It is not a changelog or
-a dumping ground for every change, experiment, or implementation detail.
-Use well-structured Markdown with clear headings and logically grouped content.
-Update it only when a change affects that high-level understanding or usage.
+The root `README.md` is a human-friendly introduction and index. Explain what
+the repository is for, list the model projects, and link to purpose-specific
+README files and guides. Keep detailed setup, development instructions, APIs,
+and implementation details out of it. It is not a changelog.
+
+Every model under `src/` and every shared library under `libs/` must have both:
+- `README.md`: human-facing purpose, usage, runnable examples, and relevant
+  component-specific technical documentation.
+- `AGENTS.md`: component-specific coding-agent instructions, constraints, and
+  maintenance guidance. These supplement the root instructions rather than
+  duplicating them.
+
+Keep documentation close to the component it describes. Link from the root
+README to component README files instead of duplicating their contents.
+Repository-wide environment setup and development details belong in
+`DEVELOMENT.md`, linked from the root README. Agreed architectural decisions
+and their rationale remain in `design-log/`.
+
+When adding or changing a model or library, keep its README and agent guidance
+current. Update the root index when projects or documentation entry points
+change. Use clear headings and logically grouped content throughout.
 
 # Diagrams
 

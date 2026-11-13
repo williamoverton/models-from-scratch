@@ -1,0 +1,13 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "model-tokenizer"
+version = "0.1.0"
+description = "Shared byte-level BPE tokenizer for toy models"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/model_tokenizer"]
