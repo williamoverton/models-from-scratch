@@ -6,10 +6,12 @@ from the prepared dataset.
 
 ## Training example
 
-Dashboard preview at **50,000 training steps**, showing one generation after
-100, 500, and 1,000 denoising steps.
+Dashboard preview of the **block-level skip architecture at 50,000 training
+steps**. The top row uses current weights; the bottom row uses EMA weights.
+Both use seed `42` with identical generation randomness. Columns show results
+after 100, 500, and 1,000 denoising steps.
 
-![Doggie Diffusion at training step 50,000: noise progressively becomes a recognizable dog.](training-step-50000.png)
+![Current weights (top) and EMA weights (bottom) at training step 50,000, each showing a fixed-seed generation after 100, 500, and 1,000 denoising steps.](training-step-50000.png)
 
 ## Prepare the dataset
 
