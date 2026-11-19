@@ -45,6 +45,8 @@ root `uv.lock`.
 
 - `src/hello-world/`: single-neuron learning project.
 - `src/doggie-diffusion/`: dog-image generation project.
+- `src/numpy-llm-stories/`: notebook-led transformer math with NumPy;
+  see its [README](src/numpy-llm-stories/README.md) for JupyterLab setup.
 - `libs/model-training/`: shared Textual training dashboard and progress contract.
 - `libs/model-tokenizer/`: shared byte-level BPE tokenizer;
   see its [README](libs/model-tokenizer/README.md) for usage and artifact details.

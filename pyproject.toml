@@ -1,17 +1,18 @@
 [project]
 name = "models-from-scratch"
 version = "0.1.0"
-description = "Learning how models work through small PyTorch projects"
+description = "Learning how models work through small from-scratch projects"
 requires-python = ">=3.12"
-dependencies = ["hello-world", "doggie-diffusion", "model-tokenizer"]
+dependencies = ["hello-world", "doggie-diffusion", "model-tokenizer", "numpy-llm-stories"]
 
 [tool.uv]
 package = false
 
 [tool.uv.workspace]
-members = ["src/hello-world", "src/doggie-diffusion", "libs/model-training", "libs/model-tokenizer"]
+members = ["src/hello-world", "src/doggie-diffusion", "src/numpy-llm-stories", "libs/model-training", "libs/model-tokenizer"]
 
 [tool.uv.sources]
 hello-world = { workspace = true }
 doggie-diffusion = { workspace = true }
 model-tokenizer = { workspace = true }
+numpy-llm-stories = { workspace = true }

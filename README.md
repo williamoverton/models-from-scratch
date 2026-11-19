@@ -11,14 +11,15 @@ model quality or production readiness.
 | --- | --- |
 | [Hello World](src/hello-world/) | A single linear neuron learning `y = 2x + 1`. |
 | [Doggie Diffusion](src/doggie-diffusion/) | A diffusion model learning to generate dog images. |
+| [NumPy LLM Stories](src/numpy-llm-stories/README.md) | A NumPy-only transformer for learning the math behind story generation. In design; model not implemented yet. |
 
-Both projects use a terminal dashboard to follow training progress and loss.
+Hello World and Doggie Diffusion use a terminal dashboard for training progress and loss.
 Doggie Diffusion also shows generated image previews.
 
 ## Getting started
 
-You'll need Python, [uv](https://docs.astral.sh/uv/), and an NVIDIA GPU for the
-current model projects. Follow the [development and setup guide](DEVELOMENT.md)
+You'll need Python, [uv](https://docs.astral.sh/uv/), and an NVIDIA GPU to run
+Hello World or Doggie Diffusion. Follow the [development and setup guide](DEVELOMENT.md)
 to prepare the environment, including the NixOS development shell.
 
 From the repository root, launch a project:

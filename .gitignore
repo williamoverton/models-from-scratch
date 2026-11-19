@@ -18,6 +18,12 @@ dist/
 .coverage.*
 htmlcov/
 
+# Jupyter autosave checkpoints
+.ipynb_checkpoints/
+
+# Marimo session state and generated outputs
+__marimo__/
+
 # Local environment variables (keep shareable examples)
 .env
 .env.*

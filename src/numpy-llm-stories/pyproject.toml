@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "numpy-llm-stories"
+version = "0.1.0"
+description = "Learning transformer math with NumPy and TinyStories"
+requires-python = ">=3.12"
+dependencies = ["numpy", "model-tokenizer"]
+
+[project.optional-dependencies]
+notebooks = ["jupyterlab", "ipykernel"]
+marimo = ["marimo"]
+
+[tool.uv.sources]
+model-tokenizer = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/numpy_llm_stories"]
