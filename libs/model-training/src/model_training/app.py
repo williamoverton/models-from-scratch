@@ -4,6 +4,7 @@ import termios
 from collections.abc import Callable
 from pathlib import Path
 from threading import Event
+from typing import Literal
 
 from textual import work
 from textual.app import App, ComposeResult
@@ -11,8 +12,13 @@ from textual.containers import Vertical, VerticalScroll
 from textual.worker import WorkerCancelled, get_current_worker
 from textual.widgets import Footer, Header, RichLog, Sparkline, Static
 
-from model_training.preview import ImageGenerationPanel
-from model_training.progress import ImageGenerationPreview, ProgressCallback, TrainingProgress
+from model_training.preview import ImageGenerationPanel, TextGenerationPanel
+from model_training.progress import (
+    ImageGenerationPreview,
+    ProgressCallback,
+    TextGenerationPreview,
+    TrainingProgress,
+)
 
 
 class TrainingApp(App):
@@ -30,7 +36,7 @@ class TrainingApp(App):
         train: Callable[[ProgressCallback, Event], None],
         *,
         title: str,
-        image_generation: bool = False,
+        preview_mode: Literal["none", "image", "text"],
         log_path: Path = Path("logs/training.log"),
         generate: Callable[[], ImageGenerationPreview] | None = None,
         generation_request: Event | None = None,
@@ -38,7 +44,7 @@ class TrainingApp(App):
         super().__init__()
         self.train = train
         self.title = title
-        self.image_generation = image_generation
+        self.preview_mode = preview_mode
         self.stop_event = Event()
         self.quit_requested = False
         self.generate = generate
@@ -82,7 +88,7 @@ class TrainingApp(App):
     def compose(self) -> ComposeResult:
         """Build the dashboard without model-specific metric fields."""
         yield Header()
-        if self.image_generation:
+        if self.preview_mode == "image":
             yield ImageGenerationPanel(id="image-generation", classes="panel")
         with VerticalScroll(id="dashboard"):
             yield Static("Idle — press S to train.", id="status")
@@ -92,6 +98,10 @@ class TrainingApp(App):
             with Vertical(id="loss-panel", classes="panel"):
                 yield Static("No loss samples yet.", id="loss-caption")
                 yield Sparkline([], id="loss-history")
+            if self.preview_mode == "text":
+                yield TextGenerationPanel(
+                    id="text-generation", classes="panel", markup=False
+                )
             yield RichLog(id="training-log", wrap=True, markup=False, max_lines=1000)
         yield Footer()
 
@@ -118,8 +128,10 @@ class TrainingApp(App):
         self.query_one("#loss-caption", Static).update("No loss samples yet.")
         self.query_one("#step", Static).update("Step: —")
         self.query_one("#metric-values", Static).update("No metrics yet.")
-        if self.image_generation:
+        if self.preview_mode == "image":
             self.query_one(ImageGenerationPanel).reset_preview()
+        elif self.preview_mode == "text":
+            self.query_one(TextGenerationPanel).reset_preview()
         self.set_status("Training…")
         self.write_log("Starting training.")
         self.run_training()
@@ -133,14 +145,22 @@ class TrainingApp(App):
         self.write_log("Stop requested; waiting for training to finish.")
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Expose generation only for apps that supply generation callbacks."""
+        """Expose G only when image mode has both generation callbacks."""
         if action == "generate":
-            return self.generate is not None and self.generation_request is not None
+            return (
+                self.preview_mode == "image"
+                and self.generate is not None
+                and self.generation_request is not None
+            )
         return True
 
     def action_generate(self) -> None:
         """Queue a training preview or generate from a checkpoint while idle."""
-        if self.generate is None or self.generation_request is None:
+        if (
+            self.preview_mode != "image"
+            or self.generate is None
+            or self.generation_request is None
+        ):
             return
         if self.generation_running:
             return
@@ -239,14 +259,19 @@ class TrainingApp(App):
         self.query_one("#status", Static).update(status)
 
     def show_progress(self, progress: TrainingProgress) -> None:
-        """Render named metrics and retain one loss sample per report."""
+        """Update the active preview and chart loss only from metric reports."""
+        preview = progress.preview
+        if self.preview_mode == "image" and isinstance(preview, ImageGenerationPreview):
+            self.query_one(ImageGenerationPanel).show_preview(preview)
+        elif self.preview_mode == "text" and isinstance(preview, TextGenerationPreview):
+            self.query_one(TextGenerationPanel).show_preview(preview)
+        if preview is not None and not progress.metrics:
+            return
+
         step_text = f"Step: {progress.step:,}"
         if progress.total_steps is not None:
             step_text += f" / {progress.total_steps:,}"
         self.query_one("#step", Static).update(step_text)
-        # Image-generation models supply display-ready images through progress.
-        if self.image_generation and progress.preview is not None:
-            self.query_one(ImageGenerationPanel).show_preview(progress.preview)
         self.query_one("#metric-values", Static).update(
             "\n".join(f"{name}: {value:.6g}" for name, value in progress.metrics.items())
         )

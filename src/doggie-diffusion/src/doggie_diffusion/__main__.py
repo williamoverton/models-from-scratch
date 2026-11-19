@@ -27,7 +27,7 @@ def main() -> None:
     app = TrainingApp(
         partial(run_training, generation_request=generation_request),
         title="Doggie Diffusion",
-        image_generation=True,
+        preview_mode="image",
         generate=generate_from_checkpoint,
         generation_request=generation_request,
     )

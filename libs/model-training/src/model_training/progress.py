@@ -22,6 +22,23 @@ class ImageGenerationPreview:
 
 
 @dataclass(frozen=True)
+class TextGenerationExample:
+    """A labeled, display-ready context and completion."""
+
+    label: str
+    context: str
+    completion: str
+
+
+@dataclass(frozen=True)
+class TextGenerationPreview:
+    """A complete snapshot of generated examples at a completed step."""
+
+    step: int
+    examples: tuple[TextGenerationExample, ...]
+
+
+@dataclass(frozen=True)
 class TrainingProgress:
     """A model-independent snapshot of training progress.
 
@@ -31,13 +48,15 @@ class TrainingProgress:
     total_steps is None when training runs until stopped.
     Each snapshot owns a fresh metrics dictionary that producers and consumers
     must not modify after publication.
-    An optional preview carries model-provided images, not model tensors.
+    An optional preview carries display-ready images or text, not model tensors.
+    A preview-only report uses an empty metrics dictionary and leaves the
+    metric display and loss history unchanged.
     """
 
     step: int
     total_steps: int | None
     metrics: dict[str, float]
-    preview: ImageGenerationPreview | None = None
+    preview: ImageGenerationPreview | TextGenerationPreview | None = None
 
 
 type ProgressCallback = Callable[[TrainingProgress], None]

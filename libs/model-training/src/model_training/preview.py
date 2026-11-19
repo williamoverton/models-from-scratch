@@ -3,7 +3,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Static
 from textual_image.widget import Image
 
-from model_training.progress import ImageGenerationPreview
+from model_training.progress import ImageGenerationPreview, TextGenerationPreview
 
 
 class ImageGenerationPanel(Vertical):
@@ -43,3 +43,24 @@ class ImageGenerationPanel(Vertical):
             for index in range(3):
                 self.query_one(f"#preview-label-{row}-{index}", Static).update("—")
                 self.query_one(f"#preview-image-{row}-{index}", Image).image = None
+
+
+class TextGenerationPanel(Static):
+    """Display the latest generated text snapshot or a waiting message."""
+
+    def on_mount(self) -> None:
+        self.border_title = "Generated examples"
+        self.reset_preview()
+
+    def show_preview(self, preview: TextGenerationPreview) -> None:
+        """Replace the snapshot with its producing step and labeled text."""
+        sections = [f"Sample step {preview.step:,}"]
+        sections.extend(
+            f"{example.label}\n{example.context}\n{example.completion}"
+            for example in preview.examples
+        )
+        self.update("\n\n".join(sections))
+
+    def reset_preview(self) -> None:
+        """Clear the snapshot before starting another run."""
+        self.update("Waiting for first example.")

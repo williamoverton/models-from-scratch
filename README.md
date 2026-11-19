@@ -11,15 +11,16 @@ model quality or production readiness.
 | --- | --- |
 | [Hello World](src/hello-world/) | A single linear neuron learning `y = 2x + 1`. |
 | [Doggie Diffusion](src/doggie-diffusion/) | A diffusion model learning to generate dog images. |
+| [Tool Calling](src/tool-calling/) | A language model learning to propose tool calls and answer from simulated results. |
 | [NumPy LLM Stories](src/numpy-llm-stories/README.md) | A NumPy-only transformer for learning the math behind story generation. In design; model not implemented yet. |
 
-Hello World and Doggie Diffusion use a terminal dashboard for training progress and loss.
-Doggie Diffusion also shows generated image previews.
+Hello World, Doggie Diffusion, and Tool Calling use a terminal dashboard for training progress and loss.
+Doggie Diffusion shows image previews; Tool Calling shows generated text examples.
 
 ## Getting started
 
 You'll need Python, [uv](https://docs.astral.sh/uv/), and an NVIDIA GPU to run
-Hello World or Doggie Diffusion. Follow the [development and setup guide](DEVELOMENT.md)
+the PyTorch projects. Follow the [development and setup guide](DEVELOMENT.md)
 to prepare the environment, including the NixOS development shell.
 
 From the repository root, launch a project:
@@ -35,11 +36,13 @@ uv run doggie-diffusion
 ```
 
 In Hello World, press **S** to start training and **Q** to quit.
+For Tool Calling, follow its [data preparation and launch guide](src/tool-calling/README.md).
 
 ## Explore further
 
 - [Shared tokenizer](libs/model-tokenizer/README.md): train a vocabulary for a
   text model and explore how text becomes token IDs.
+- [Training dashboard](libs/model-training/README.md): shared training controls, metrics, and previews.
 - [Learning experiments](scripts/): small console scripts for exploring
   individual concepts.
 - [Design log](design-log/): the decisions behind the projects and shared tools.

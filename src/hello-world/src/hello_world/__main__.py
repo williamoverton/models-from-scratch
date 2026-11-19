@@ -26,7 +26,9 @@ def main() -> None:
     )
     parser.parse_args()
 
-    app = TrainingApp(run_training, title="Hello World — Linear Neuron")
+    app = TrainingApp(
+        run_training, title="Hello World — Linear Neuron", preview_mode="none"
+    )
     app.run()
 
 

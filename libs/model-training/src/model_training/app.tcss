@@ -33,6 +33,11 @@ Screen {
     height: 4;
 }
 
+#text-generation {
+    text-wrap: wrap;
+    text-overflow: fold;
+}
+
 #training-log {
     height: 1fr;
     min-height: 6;
