@@ -34,8 +34,8 @@ def lock_run(directory: Path):
 
 def _settings(config: Config) -> dict:
     settings = asdict(config)
-    # A new absolute ceiling and reporting cadence do not change an optimizer update.
-    for name in ("training_steps", "eval_interval", "eval_batches", "checkpoint_interval"):
+    # Reporting and save cadence do not change an optimizer update.
+    for name in ("eval_interval", "eval_batches", "checkpoint_interval"):
         settings.pop(name)
     return settings
 
@@ -86,8 +86,6 @@ def read_checkpoint(path: Path, config: Config, manifest_digest: str) -> dict | 
         step = state["step"]
         if type(step) is not int or step < 1:
             raise ValueError("Invalid completed step in checkpoint.")
-        if config.training_steps <= step:
-            raise ValueError(f"Already at step {step:,}; increase --steps to continue.")
         _check_finite(state)
         return state
     except Exception as error:

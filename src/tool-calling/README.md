@@ -10,7 +10,7 @@ Set up the repository environment using the [development guide](../../DEVELOMENT
 Run these commands from the workspace root:
 
 ```sh
-uv run tool-calling prepare-data --output-dir trained-models/tool-calling/data
+uv run tool-calling prepare-data --output-dir datasets/tool-calling
 ```
 
 Preparation uses seed 42 by default and refuses an existing output path.
@@ -37,29 +37,27 @@ artifacts out of version control.
 
 ```sh
 uv run tool-calling train \
-  --data-dir trained-models/tool-calling/data \
-  --run-dir trained-models/tool-calling/runs/first \
-  --steps 500
+  --data-dir datasets/tool-calling \
+  --run-dir trained-models/tool-calling/runs/first
 ```
 
-Press **S** to start, **X** to stop training, or **Q** to stop and quit.
+Press **S** to start or resume. Training runs until you press **X** to stop or
+**Q** to stop and quit. The dashboard shows completed steps without a total.
 Training requires CUDA and uses Adam with FP16 mixed precision. Eligible
 operations use FP16; model weights and Adam state stay FP32. Gradient scaling
 skips overflowing updates without advancing the step count.
 
-The panel below loss shows a fixed prompt after the first completed step, every
-500 steps, and at completion. **Generated tool call** is the model's proposal.
+The panel below loss shows a fixed prompt after the first completed step of
+each session and every 500 steps. **Generated tool call** is the model's proposal.
 **Generated answer from supplied reference result** is a separate generation;
 it receives a reference call and result even when the proposed call is wrong.
 Control markers such as `<EXECUTE>` are displayed, not acted on. Text remains
 visible when progress metrics update or training stops.
 
-`--steps` is the absolute training step limit (default 100,000). `training.log`
-and `checkpoint.pt` live in the run directory. A normal Stop or Quit saves the
-latest completed step. Reuse the data and run directories to resume, raising
-`--steps` if the previous run reached its limit. Only checkpoints from the
-current CUDA FP16/Adam trainer can resume. Use a new run directory to start
-fresh; incompatible checkpoints are not overwritten.
+`training.log` and `checkpoint.pt` live in the run directory. The trainer
+checkpoints periodically and saves the latest completed step on Stop or Quit.
+Reuse the data and run directories to resume a compatible checkpoint. Use a
+new run directory to start fresh; incompatible checkpoints are not overwritten.
 
 ## What the model learns
 

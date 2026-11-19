@@ -45,7 +45,7 @@ def _add_validation_metrics(result, metrics: dict[str, float], log: Logger, step
 
 
 def run_training(report: ProgressCallback, stop_event: Event, *, data_dir: Path, run_dir: Path,
-                 steps: int, log: Logger) -> None:
+                 log: Logger) -> None:
     """Bind a run to one verified bundle and stop between completed optimizer updates."""
     if stop_event.is_set():
         return
@@ -57,7 +57,7 @@ def run_training(report: ProgressCallback, stop_event: Event, *, data_dir: Path,
         bundle = load_bundle(data_dir, stop_event)
         if bundle is None:
             return
-        config = Config(context_length=bundle.context_length, training_steps=steps)
+        config = Config(context_length=bundle.context_length)
         path = run_dir / CHECKPOINT_NAME
         state = read_checkpoint(path, config, bundle.manifest_digest)
         if stop_event.is_set():
@@ -99,7 +99,7 @@ def _train(report, stop_event, log, path, manifest_digest, config, device, model
         saved_step = step
         log.info("Saved checkpoint at step %s: %s", step, path)
 
-    while step < config.training_steps and not stop_event.is_set():
+    while not stop_event.is_set():
         started = perf_counter()
         inputs, targets = batcher.next_batch(device)
         with autocast():
@@ -128,10 +128,9 @@ def _train(report, stop_event, log, path, manifest_digest, config, device, model
         step += 1
         last_loss = loss_value
         first = step == start_step + 1
-        final = step == config.training_steps
-        diagnostics_due = first or final or step % config.eval_interval == 0
-        preview_due = first or final or step % SAMPLE_INTERVAL == 0
-        checkpoint_due = final or step % config.checkpoint_interval == 0
+        diagnostics_due = first or step % config.eval_interval == 0
+        preview_due = first or step % SAMPLE_INTERVAL == 0
+        checkpoint_due = step % config.checkpoint_interval == 0
         if diagnostics_due or preview_due or checkpoint_due or stop_event.is_set():
             torch.cuda.synchronize(device)
         measured_seconds += perf_counter() - started
@@ -159,15 +158,15 @@ def _train(report, stop_event, log, path, manifest_digest, config, device, model
         if checkpoint_due or stop_event.is_set():
             save_latest()
         if metrics is not None:
-            report(TrainingProgress(step, config.training_steps, metrics))
+            report(TrainingProgress(step, None, metrics))
             reported_step = step
         if preview_due and not stop_event.is_set():
             preview = create_preview(model, tokenizer, config, device, step, stop_event)
             if preview is not None and not stop_event.is_set():
-                report(TrainingProgress(step, config.training_steps, {}, preview))
+                report(TrainingProgress(step, None, {}, preview))
 
     # An early Stop/Quit may land after an update but outside any checkpoint boundary.
     if step > saved_step:
         save_latest()
     if step > reported_step:
-        report(TrainingProgress(step, config.training_steps, {"loss": last_loss}))
+        report(TrainingProgress(step, None, {"loss": last_loss}))

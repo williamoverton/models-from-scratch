@@ -4,15 +4,11 @@ from dataclasses import dataclass
 from typing import Literal
 
 
-DEFAULT_STEPS = 100_000
-
-
 @dataclass(frozen=True)
 class Config:
     """Model context comes exclusively from the prepared data manifest."""
 
     context_length: int
-    training_steps: int = DEFAULT_STEPS
     batch_size: int = 16
     embedding_dim: int = 512
     feed_forward_dim: int = 1024

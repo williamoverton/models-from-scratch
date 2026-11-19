@@ -41,3 +41,6 @@ __marimo__/
 
 # Local trained model checkpoints
 /trained-models/
+
+# Local datasets
+/datasets/
