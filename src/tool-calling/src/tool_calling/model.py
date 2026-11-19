@@ -4,7 +4,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .config import Config
+from .config import BlockSpec, Config
 
 
 class InputEmbeddings(nn.Module):
@@ -109,17 +109,18 @@ class SwiGLUFeedForward(nn.Module):
 class TransformerBlock(nn.Module):
     """Apply separately normalized token mixing and feed-forward residual branches."""
 
-    def __init__(self, config: Config, block_type: str):
+    def __init__(self, config: Config, spec: BlockSpec):
         super().__init__()
         self.attention_norm = nn.LayerNorm(config.embedding_dim)
-        if block_type == "convolution":
-            self.mixer = GatedShortConvolution(config)
-        elif block_type == "local":
-            self.mixer = MultiHeadAttention(config, window=config.local_window)
-        elif block_type == "global":
-            self.mixer = MultiHeadAttention(config)
-        else:
-            raise ValueError(f"Unknown block type: {block_type}")
+        match spec:
+            case "convolution":
+                self.mixer = GatedShortConvolution(config)
+            case "global":
+                self.mixer = MultiHeadAttention(config)
+            case ("local", int(window)) if window > 0:
+                self.mixer = MultiHeadAttention(config, window=window)
+            case _:
+                raise ValueError(f"Invalid block specification: {spec!r}")
         self.feed_forward_norm = nn.LayerNorm(config.embedding_dim)
         self.feed_forward = (
             SwiGLUFeedForward(config) if config.feed_forward_type == "swiglu"
@@ -143,7 +144,7 @@ class LanguageModel(nn.Module):
         if not config.num_heads or config.embedding_dim % config.num_heads != 0:
             raise ValueError("Embedding width must be divisible by the head count.")
         self.embeddings = InputEmbeddings(vocab_size, config)
-        self.blocks = nn.ModuleList(TransformerBlock(config, kind) for kind in config.block_types)
+        self.blocks = nn.ModuleList(TransformerBlock(config, spec) for spec in config.block_schedule)
         self.final_norm = nn.LayerNorm(config.embedding_dim)
         self.prediction = nn.Linear(config.embedding_dim, vocab_size)
 

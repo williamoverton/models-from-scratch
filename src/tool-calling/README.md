@@ -67,3 +67,15 @@ is applied only to assistant tokens, including structured calls and answers.
 The validation split holds out schemas, not necessarily operation patterns.
 Greedy tool-name accuracy checks call framing and the name, not argument
 correctness or end-to-end tool success.
+
+### Attention windows
+
+Edit `Config.block_schedule` in [`config.py`](src/tool-calling/config.py) to
+set the mixer for each block. Use `("local", 64)` for a 64-token causal window
+(including the current token), `"global"` for full causal attention, or
+`"convolution"` for a causal convolution. By default, blocks 5 and 13 use
+64 tokens; blocks 7 and 11 use 128. Global attention is at blocks 3, 9, and 15.
+
+Changing the schedule requires a new `--run-dir`, but you can reuse the
+prepared data bundle. Checkpoints from the previous uniform-window
+configuration cannot resume under the per-layer schedule.
