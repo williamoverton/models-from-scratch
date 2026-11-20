@@ -1,22 +1,28 @@
 """Prepare hash-bound, packed next-token data from local Wikipedia and Q&A."""
 
+from array import array
+from collections import deque
 from collections.abc import Callable, Iterator
+from concurrent.futures import ProcessPoolExecutor
 from contextlib import ExitStack, closing
 from functools import lru_cache
 import gzip
 from hashlib import file_digest, sha256
 from heapq import heapify, heappop, heappush
 from html.parser import HTMLParser
-from itertools import chain, islice
+from itertools import islice
 import json
+from multiprocessing import get_context
 from pathlib import Path
 from shutil import copyfile
-from struct import Struct
+from sys import byteorder
 from tempfile import TemporaryDirectory
+from time import monotonic
 from typing import BinaryIO
 
 from model_tokenizer import Tokenizer
 from model_tokenizer.pretokenization import split_chunks
+import numpy as np
 import pyarrow.parquet as pq
 
 from .framing import _Control
@@ -28,6 +34,8 @@ _VALIDATION_WINDOWS = 1024
 _VALIDATION_MODULUS = 100
 _QA_OPEN_SHARDS = 32
 _QA_RECORDS_PER_TURN = 8
+_TASK_BYTES = 512 * 1024
+_TASK_RECORDS = 256
 _IGNORED_HTML = frozenset({"aside", "footer", "head", "nav", "script", "style", "template"})
 _BLOCK_HTML = frozenset({
     "article", "blockquote", "br", "caption", "dd", "div", "dl", "dt", "figcaption",
@@ -66,7 +74,8 @@ class _ArticleText(HTMLParser):
         return "\n".join(line for line in lines if line)
 
 
-def _zim_records(path: Path) -> Iterator[tuple[str, str]]:
+def _zim_records(path: Path) -> Iterator[tuple[str, str, bytes]]:
+    """Read article HTML in physical order, leaving parsing to workers."""
     # https://python-libzim.readthedocs.io/en/latest/api_reference/libzim.reader/
     try:
         from libzim.reader import Archive
@@ -84,13 +93,7 @@ def _zim_records(path: Path) -> Iterator[tuple[str, str]]:
         item = entry.get_item()
         if item.mimetype.split(";", 1)[0] != "text/html":
             continue
-        parser = _ArticleText()
-        parser.feed(str(item.content, "utf-8", errors="replace"))
-        parser.close()
-        text = parser.text()
-        if text:
-            title = entry.title.strip()
-            yield entry.path, f"{title}\n\n{text}" if title else text
+        yield entry.path, entry.title, bytes(item.content)
 
 
 def _parquet_records(path: Path) -> Iterator[tuple[str, str]]:
@@ -220,8 +223,7 @@ class _WindowWriter:
         self._name = name
         self._width = width
         self._limit = limit
-        self._pack = Struct(f"<{width}H").pack
-        self._pending: list[int] = []
+        self._pending = b""
         self._stream: BinaryIO | None = None
         self._digest = sha256()
         self._file = ""
@@ -233,21 +235,32 @@ class _WindowWriter:
     def full(self) -> bool:
         return self._limit is not None and self.total == self._limit
 
-    def append(self, tokens: Iterator[int]) -> None:
-        while not self.full:
-            self._pending.extend(islice(tokens, self._width - len(self._pending)))
-            if len(self._pending) < self._width:
-                break
+    def append(self, encoded: bytes) -> None:
+        """Append a stream segment, retaining the token shared by adjacent windows."""
+        if not encoded or self.full:
+            return
+        tokens = np.frombuffer(self._pending + encoded, dtype="<u2")
+        if len(tokens) < self._width:
+            self._pending = tokens.tobytes()
+            return
+        stride = self._width - 1
+        windows = np.lib.stride_tricks.sliding_window_view(tokens, self._width)[::stride]
+        if self._limit is not None:
+            windows = windows[:self._limit - self.total]
+        self._pending = b""
+        if self._limit != self.total + len(windows):
+            self._pending = tokens[len(windows) * stride:].tobytes()
+        while len(windows):
             if self._stream is None:
                 self._file = f"{self._name}-{len(self.shards):06}.bin"
                 self._stream = (self._directory / self._file).open("xb", buffering=1024 * 1024)
-            contents = self._pack(*self._pending)
+            count = min(len(windows), _ROWS_PER_SHARD - self._rows)
+            contents = windows[:count].tobytes()
             self._stream.write(contents)
             self._digest.update(contents)
-            self._rows += 1
-            self.total += 1
-            # Carry just the last token into the next context window.
-            self._pending[:] = self._pending[-1:]
+            self._rows += count
+            self.total += count
+            windows = windows[count:]
             if self._rows == _ROWS_PER_SHARD:
                 self.close()
 
@@ -260,31 +273,97 @@ class _WindowWriter:
             self._digest = sha256()
 
 
+type _Record = tuple[str, str] | tuple[str, str, bytes]
+_encoder: Callable[[bytes], tuple[int, ...]]
+_eod: int
+
+
+def _init_worker(tokenizer_path: Path, eod: int) -> None:
+    """Build a private bounded encode cache in each process."""
+    global _encoder, _eod
+    _encoder = _chunk_encoder(Tokenizer.load(tokenizer_path))
+    _eod = eod
+
+
+def _encode_records(source: str, records: list[_Record],
+                    include_train: bool, include_validation: bool) -> tuple[bytes, bytes]:
+    """Split by document and encode each stream in input order."""
+    train, validation = array("H"), array("H")
+    prefix = source.encode("ascii") + b"\0"
+    for document_id, text, *html in records:
+        bucket = int.from_bytes(sha256(prefix + document_id.encode("utf-8")).digest()[:8], "big")
+        held_out = bucket % _VALIDATION_MODULUS == 0
+        if not (include_validation if held_out else include_train):
+            continue
+        if html:
+            parser = _ArticleText()
+            parser.feed(html[0].decode("utf-8", errors="replace"))
+            parser.close()
+            title, text = text.strip(), parser.text()
+            if not text:
+                continue
+            if title:
+                text = f"{title}\n\n{text}"
+        tokens = validation if held_out else train
+        for chunk in split_chunks(text):
+            tokens.extend(_encoder(chunk))
+        tokens.append(_eod)
+    if byteorder != "little":
+        train.byteswap()
+        validation.byteswap()
+    return train.tobytes(), validation.tobytes()
+
+
+def _record_batches(records: Iterator[_Record]) -> Iterator[list[_Record]]:
+    """Bound in-flight data by input size as well as document count."""
+    batch: list[_Record] = []
+    size = 0
+    for record in records:
+        batch.append(record)
+        size += sum(map(len, record))
+        if size >= _TASK_BYTES or len(batch) >= _TASK_RECORDS:
+            yield batch
+            batch, size = [], 0
+    if batch:
+        yield batch
+
+
 def _pack_source(
     directory: Path,
     source: str,
-    records: Iterator[tuple[str, str]],
-    encode_chunk: Callable[[bytes], tuple[int, ...]],
-    eod: int,
+    records: Iterator[_Record],
+    pool: ProcessPoolExecutor,
+    workers: int,
     width: int,
     limits: dict[str, int | None],
 ) -> dict:
+    """Feed workers concurrently and write their results in source order."""
     train = _WindowWriter(directory, f"{source}-train", width, limits["train"])
     validation = _WindowWriter(directory, f"{source}-validation", width, limits["validation"])
-    split_prefix = source.encode("ascii") + b"\0"
+    batches = _record_batches(records)
+    pending = deque()
+    last_report = monotonic()
+    print(f"Preparing {source} with {workers} workers.", flush=True)
     with closing(train), closing(validation):
-        for document_id, text in records:
-            bucket = int.from_bytes(sha256(split_prefix + document_id.encode("utf-8")).digest()[:8], "big")
-            writer = validation if bucket % _VALIDATION_MODULUS == 0 else train
-            if writer.full:
-                continue
-            chunks = (encode_chunk(chunk) for chunk in split_chunks(text))
-            writer.append(chain(chain.from_iterable(chunks), (eod,)))
-            if train.full and validation.full:
-                break
+        try:
+            while not (train.full and validation.full):
+                while len(pending) < 2 * workers and (batch := next(batches, None)) is not None:
+                    pending.append(pool.submit(_encode_records, source, batch, not train.full, not validation.full))
+                if not pending:
+                    break
+                train_ids, validation_ids = pending.popleft().result()
+                train.append(train_ids)
+                validation.append(validation_ids)
+                if monotonic() - last_report >= 30:
+                    print(f"{source}: {train.total:,} train / {validation.total:,} validation windows", flush=True)
+                    last_report = monotonic()
+        finally:
+            for job in pending:
+                job.cancel()
     for split, writer in (("train", train), ("validation", validation)):
         if not writer.total:
             raise ValueError(f"{source}: no complete {split} windows of {width} tokens were found.")
+    print(f"Finished {source}: {train.total:,} train / {validation.total:,} validation windows", flush=True)
     return {"train": train.shards, "validation": validation.shards}
 
 
@@ -304,10 +383,13 @@ def prepare_pretraining(
     qa: Path,
     context_length: int,
     windows_per_source: int | None,
+    workers: int,
 ) -> dict:
     """Publish a new corpus directory with the original tokenizer and bin shards."""
     if type(context_length) is not int or context_length <= 0:
         raise ValueError("context_length must be a positive integer.")
+    if type(workers) is not int or workers <= 0:
+        raise ValueError("workers must be a positive integer.")
     if windows_per_source is not None and (
         type(windows_per_source) is not int or windows_per_source <= 0
     ):
@@ -347,18 +429,18 @@ def prepare_pretraining(
             raise ValueError("The pretraining tokenizer must register <END_OF_DOCUMENT>.")
         with frozen_tokenizer.open("rb") as stream:
             tokenizer_sha256 = file_digest(stream, "sha256").hexdigest()
-        encode_chunk = _chunk_encoder(tokenizer)
-
         wikipedia_records = _zim_records if wikipedia_suffix == ".zim" else _parquet_records
         sources = {}
-        for source, path, adapter, files, records in (
-            ("wikipedia", wikipedia, wikipedia_suffix[1:], [wikipedia], wikipedia_records(wikipedia)),
-            ("qa", qa, "jsonl", qa_files, _qa_records(qa_files)),
-        ):
-            provenance = _provenance(path.resolve(), adapter, files)
-            with closing(records):
-                splits = _pack_source(staging, source, records, encode_chunk, eod, context_length + 1, limits)
-            sources[source] = {**splits, "provenance": provenance}
+        with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn"),
+                                 initializer=_init_worker, initargs=(frozen_tokenizer, eod)) as pool:
+            for source, path, adapter, files, records in (
+                ("wikipedia", wikipedia, wikipedia_suffix[1:], [wikipedia], wikipedia_records(wikipedia)),
+                ("qa", qa, "jsonl", qa_files, _qa_records(qa_files)),
+            ):
+                provenance = _provenance(path.resolve(), adapter, files)
+                with closing(records):
+                    splits = _pack_source(staging, source, records, pool, workers, context_length + 1, limits)
+                sources[source] = {**splits, "provenance": provenance}
 
         manifest = {
             "format": _MANIFEST_FORMAT,

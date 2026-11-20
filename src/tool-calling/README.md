@@ -30,6 +30,9 @@ targets. Omit `--windows-per-source` to prepare all training windows, or set
 it to cap each source's preparation before an overnight run. Validation uses
 up to 1,024 windows per source. Each preparation uses a new directory; a
 running job never picks up additional shards.
+Preparation parses and tokenizes in worker processes, using all available
+logical CPUs by default. Use `--workers N` to leave CPU capacity for other jobs.
+It prints per-source window counts while it runs.
 
 In Textual, press **S** to start or resume, **X** to stop, or **Q** to stop and
 quit. The trainer loops until stopped and targets **90% Wikipedia / 10% Q&A**

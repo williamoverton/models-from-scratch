@@ -1,6 +1,7 @@
 """Prepare local text or tool-call data and train the model in Textual."""
 
 import argparse
+import os
 from pathlib import Path
 
 from .data_generation import DEFAULT_SEED
@@ -33,6 +34,9 @@ def main() -> None:
     prepare_text.add_argument("--context-length", type=_positive_int, default=DEFAULT_CONTEXT_LENGTH)
     prepare_text.add_argument("--windows-per-source", type=_positive_int,
                               help="Cap training windows per source; omit to prepare all data.")
+    prepare_text.add_argument("--workers", type=_positive_int,
+                              default=getattr(os, "process_cpu_count", os.cpu_count)() or 1,
+                              help="CPU worker processes (default: all available logical CPUs).")
 
     train = commands.add_parser("train", help="Open the dashboard, then press S to start or resume.")
     train.add_argument("--data-dir", type=Path, required=True, help="Directory from prepare-data.")
@@ -60,7 +64,8 @@ def main() -> None:
             manifest = prepare_pretraining(args.output_dir, tokenizer_path=args.tokenizer,
                                            wikipedia=args.wikipedia, qa=args.qa,
                                            context_length=args.context_length,
-                                           windows_per_source=args.windows_per_source)
+                                           windows_per_source=args.windows_per_source,
+                                           workers=args.workers)
         except (OSError, ValueError, RuntimeError) as error:
             prepare_text.error(str(error))
         counts = ", ".join(f"{name}: {sum(shard['rows'] for shard in splits['train']):,} train windows"
