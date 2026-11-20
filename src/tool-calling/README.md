@@ -4,6 +4,22 @@ Train a small language model to propose one tool call and write an answer from
 its result. Pretrain it on ordinary text or train it on synthetic tool calls.
 Neither the training dashboard nor the model executes a generated call.
 
+## Install the Turing attention extension
+
+On Linux x86-64 with Python 3.14, `uv sync` installs the SM 7.5 wheel from
+`.wheels/` without compiling CUDA. On a fresh checkout, copy the wheel built
+from the [pinned fork](https://github.com/williamoverton/flash-attention-2080ti/tree/3b3e89957f702999a8d1759c36be9136066c1d59)
+into place before syncing:
+
+```sh
+install -Dm644 /path/to/flash_attn-2.7.3-cp314-cp314-linux_x86_64.whl \
+  .wheels/flash_attn-2.7.3-cp314-cp314-linux_x86_64.whl
+uv sync
+```
+
+The wheel is local and not checked into Git. Build it only if you don’t
+already have a copy. It targets Python 3.14 and PyTorch 2.15 (`cu132`).
+
 ## Pretrain on text
 
 Prepare a frozen local bundle once. The ZIM reader needs `libzim` only during
@@ -21,7 +37,7 @@ uv run --with libzim==4.1.0 tool-calling prepare-pretrain \
 
 uv run tool-calling pretrain \
   --data-dir /mnt/StorageBox/datasets/pretrain-wiki-qa-8k \
-  --run-dir trained-models/tool-calling/runs/pretrain-wiki-qa-8k
+  --run-dir trained-models/tool-calling/runs/pretrain-wiki-qa-8k-looped
 ```
 
 The default context is 350 tokens. Preparation splits documents before
@@ -76,7 +92,7 @@ artifacts out of version control.
 ```sh
 uv run tool-calling train \
   --data-dir datasets/tool-calling \
-  --run-dir trained-models/tool-calling/runs/first
+  --run-dir trained-models/tool-calling/runs/looped
 ```
 
 Press **S** to start or resume. Training runs until you press **X** to stop or
@@ -106,14 +122,31 @@ The validation split holds out schemas, not necessarily operation patterns.
 Greedy tool-name accuracy checks call framing and the name, not argument
 correctness or end-to-end tool success.
 
-### Attention windows
+### Block schedule
 
-Edit `Config.block_schedule` in [`config.py`](src/tool-calling/config.py) to
-set the mixer for each block. Use `("local", 64)` for a 64-token causal window
-(including the current token), `"global"` for full causal attention, or
-`"convolution"` for a causal convolution. By default, blocks 5 and 13 use
-64 tokens; blocks 7 and 11 use 128. Global attention is at blocks 3, 9, and 15.
+Edit `Config.block_schedule` in [`config.py`](src/tool_calling/config.py) to
+change the block order. The default is:
 
-Changing the schedule requires a new `--run-dir`, but you can reuse the
-prepared data bundle. Checkpoints from the previous uniform-window
-configuration cannot resume under the per-layer schedule.
+| Stage | Block order |
+| --- | --- |
+| Input · once | Local-64 → Global |
+| Shared core · three passes | Conv-7 → Local-128 → Local-64 → Global |
+| Output · once | Local-64 → Global |
+
+This executes 16 blocks using eight distinct sets of block weights. Every block
+includes a SwiGLU feed-forward network. The first core pass takes the input
+stack's output directly. Before each later pass, that same saved output is
+added to the latest core state and normalized with a shared LayerNorm.
+
+Use `("local", 64)` for a 64-token causal window (including the current token),
+`"global"` for full causal attention, or `"convolution"` for causal convolution.
+`Loop(blocks=(...), passes=3)` repeats a sequence of these ordinary blocks;
+loops do not nest.
+
+Local attention uses the Turing fork's native FP16 sliding-window kernels.
+Global attention remains on causal PyTorch SDPA. The number of visible tokens
+and the checkpoint parameter layout are unchanged by the backend switch.
+
+Use a new `--run-dir` when changing the schedule, including when switching from
+the previous non-looped model. Existing prepared data can be reused; the
+default context is still 350 tokens.

@@ -14,6 +14,10 @@ directly through `TRITON_LIBCUDA_PATH`, avoiding its `/sbin/ldconfig` lookup.
 This is a normal development shell, not an FHS container: the host filesystem
 remains accessible.
 
+Before the first `uv sync` on Linux x86-64 with Python 3.14, place the
+[tool-calling FlashAttention wheel](src/tool-calling/README.md#install-the-turing-attention-extension)
+in `.wheels/`. Subsequent syncs reuse it without compiling CUDA.
+
 Enter it from the repository root and install the workspace dependencies:
 
 ```bash

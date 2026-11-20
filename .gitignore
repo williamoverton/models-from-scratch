@@ -9,6 +9,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+/.wheels/
 
 # Tool caches and coverage output
 .pytest_cache/

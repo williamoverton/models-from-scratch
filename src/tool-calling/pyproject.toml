@@ -7,7 +7,10 @@ name = "tool-calling"
 version = "0.1.0"
 description = "A small language model trained on synthetic tool calls"
 requires-python = ">=3.12"
-dependencies = ["torch", "model-training", "model-tokenizer", "pyarrow", "numpy"]
+dependencies = [
+    "torch==2.15.0", "model-training", "model-tokenizer", "pyarrow", "numpy",
+    "flash-attn; sys_platform == 'linux' and platform_machine == 'x86_64' and python_version == '3.14'",
+]
 
 [project.scripts]
 tool-calling = "tool_calling.__main__:main"
@@ -15,6 +18,7 @@ tool-calling = "tool_calling.__main__:main"
 [tool.uv.sources]
 model-training = { workspace = true }
 model-tokenizer = { workspace = true }
+flash-attn = { path = "../../.wheels/flash_attn-2.7.3-cp314-cp314-linux_x86_64.whl" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tool_calling"]

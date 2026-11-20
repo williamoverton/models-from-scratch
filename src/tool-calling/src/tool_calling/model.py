@@ -3,8 +3,9 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
+from flash_attn import flash_attn_func
 
-from .config import BlockSpec, Config
+from .config import BlockSpec, Config, Loop
 
 
 class InputEmbeddings(nn.Module):
@@ -52,23 +53,22 @@ class MultiHeadAttention(nn.Module):
         self.output = nn.Linear(config.embedding_dim, config.embedding_dim)
 
     def forward(self, vectors: torch.Tensor) -> torch.Tensor:
-        # Stack each head's independent projections: [batch, heads, time, head_dim].
+        # Stack directly in FlashAttention's [batch, time, heads, head_dim] layout.
         projected = [head(vectors) for head in self.heads]
-        queries, keys, values = (torch.stack(items, dim=1) for items in zip(*projected))
-        length = vectors.shape[1]
-        mask = None
-        if self.window is not None and self.window < length:
-            positions = torch.arange(length, device=vectors.device)
-            distance = positions[:, None] - positions[None, :]
-            # SDPA's boolean mask is True where a query may see a key.
-            mask = (distance >= 0) & (distance < self.window)
-        outputs = F.scaled_dot_product_attention(
-            queries, keys, values, attn_mask=mask, is_causal=mask is None, dropout_p=0.0
-        )
+        queries, keys, values = (torch.stack(items, dim=2) for items in zip(*projected))
+        if self.window is not None:
+            # The fork counts tokens to the left, excluding the current token.
+            outputs = flash_attn_func(
+                queries, keys, values, causal=True, window_size=(self.window - 1, 0)
+            )
+        else:
+            outputs = F.scaled_dot_product_attention(
+                queries.transpose(1, 2), keys.transpose(1, 2), values.transpose(1, 2),
+                is_causal=True,
+            ).transpose(1, 2)
         if self.head_gate is not None:
-            gates = torch.sigmoid(self.head_gate(vectors))
-            outputs = outputs * gates.transpose(1, 2).unsqueeze(-1)
-        combined = outputs.transpose(1, 2).reshape(vectors.shape[0], length, -1)
+            outputs = outputs * torch.sigmoid(self.head_gate(vectors)).unsqueeze(-1)
+        combined = outputs.flatten(2)
         return self.output(combined)
 
 
@@ -136,6 +136,24 @@ class TransformerBlock(nn.Module):
         return vectors + self.feed_forward(self.feed_forward_norm(vectors))
 
 
+class LoopBlock(nn.Module):
+    """Refine a fixed input with repeated passes through one learned core."""
+
+    def __init__(self, config: Config, spec: Loop):
+        super().__init__()
+        self.core = nn.Sequential(*(TransformerBlock(config, block) for block in spec.blocks))
+        self.passes = spec.passes
+        self.reentry_norm = nn.LayerNorm(config.embedding_dim) if self.passes > 1 else None
+
+    def forward(self, vectors: torch.Tensor) -> torch.Tensor:
+        """Reinject the original [batch, time, width] state after the first pass."""
+        state = self.core(vectors)
+        if self.reentry_norm is not None:
+            for _ in range(self.passes - 1):
+                state = self.core(self.reentry_norm(state + vectors))
+        return state
+
+
 class LanguageModel(nn.Module):
     """Turn [batch, time] token IDs into [batch, time, vocabulary] logits."""
 
@@ -144,7 +162,10 @@ class LanguageModel(nn.Module):
         if not config.num_heads or config.embedding_dim % config.num_heads != 0:
             raise ValueError("Embedding width must be divisible by the head count.")
         self.embeddings = InputEmbeddings(vocab_size, config)
-        self.blocks = nn.ModuleList(TransformerBlock(config, spec) for spec in config.block_schedule)
+        self.blocks = nn.ModuleList(
+            LoopBlock(config, spec) if isinstance(spec, Loop) else TransformerBlock(config, spec)
+            for spec in config.block_schedule
+        )
         self.final_norm = nn.LayerNorm(config.embedding_dim)
         self.prediction = nn.Linear(config.embedding_dim, vocab_size)
 
