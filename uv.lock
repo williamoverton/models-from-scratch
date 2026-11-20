@@ -2500,6 +2500,7 @@ source = { editable = "src/tool-calling" }
 dependencies = [
     { name = "model-tokenizer" },
     { name = "model-training" },
+    { name = "numpy" },
     { name = "pyarrow" },
     { name = "torch" },
 ]
@@ -2508,6 +2509,7 @@ dependencies = [
 requires-dist = [
     { name = "model-tokenizer", editable = "libs/model-tokenizer" },
     { name = "model-training", editable = "libs/model-training" },
+    { name = "numpy" },
     { name = "pyarrow" },
     { name = "torch" },
 ]

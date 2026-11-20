@@ -1,4 +1,4 @@
-"""Prepare local tool-calling data or train the model in Textual."""
+"""Prepare local text or tool-call data and train the model in Textual."""
 
 import argparse
 from pathlib import Path
@@ -25,9 +25,23 @@ def main() -> None:
     prepare.add_argument("--seed", type=int, default=DEFAULT_SEED,
                          help=f"Corpus generation seed (default: {DEFAULT_SEED}).")
 
+    prepare_text = commands.add_parser("prepare-pretrain", help="Pack local corpora for next-token pretraining.")
+    prepare_text.add_argument("--wikipedia", type=Path, required=True, help="Local Wikipedia ZIM or article Parquet.")
+    prepare_text.add_argument("--qa", type=Path, required=True, help="Stack Exchange JSONL, gzip file, or shard directory.")
+    prepare_text.add_argument("--tokenizer", type=Path, required=True, help="Saved tokenizer with tool protocol IDs.")
+    prepare_text.add_argument("--output-dir", type=Path, required=True, help="New directory for the bundle.")
+    prepare_text.add_argument("--context-length", type=_positive_int, default=DEFAULT_CONTEXT_LENGTH)
+    prepare_text.add_argument("--windows-per-source", type=_positive_int,
+                              help="Cap training windows per source; omit to prepare all data.")
+
     train = commands.add_parser("train", help="Open the dashboard, then press S to start or resume.")
     train.add_argument("--data-dir", type=Path, required=True, help="Directory from prepare-data.")
     train.add_argument("--run-dir", type=Path, required=True, help="Directory for checkpoint.pt and training.log.")
+
+    pretrain = commands.add_parser("pretrain", help="Open the next-token pretraining dashboard.")
+    pretrain.add_argument("--data-dir", type=Path, required=True, help="Directory from prepare-pretrain.")
+    pretrain.add_argument("--run-dir", type=Path, required=True, help="Directory for pretraining checkpoints and log.")
+    pretrain.add_argument("--batch-size", type=_positive_int, default=8)
     args = parser.parse_args()
 
     if args.command == "prepare-data":
@@ -39,19 +53,45 @@ def main() -> None:
         print(f"Prepared {args.output_dir} ({counts}; context length: {manifest['context_length']}).")
         return
 
+    if args.command == "prepare-pretrain":
+        from .pretrain_data import prepare_pretraining
+
+        try:
+            manifest = prepare_pretraining(args.output_dir, tokenizer_path=args.tokenizer,
+                                           wikipedia=args.wikipedia, qa=args.qa,
+                                           context_length=args.context_length,
+                                           windows_per_source=args.windows_per_source)
+        except (OSError, ValueError, RuntimeError) as error:
+            prepare_text.error(str(error))
+        counts = ", ".join(f"{name}: {sum(shard['rows'] for shard in splits['train']):,} train windows"
+                           for name, splits in manifest["sources"].items())
+        print(f"Prepared {args.output_dir} ({counts}; context length: {manifest['context_length']}).")
+        return
+
     _open_dashboard(args)
 
 
 def _open_dashboard(args: argparse.Namespace) -> None:
     from model_training.app import TrainingApp
 
-    from .training import run_training
+    if args.command == "pretrain":
+        from .pretraining import run_pretraining
 
-    def train(report, stop_event):
-        run_training(report, stop_event, data_dir=args.data_dir, run_dir=args.run_dir,
-                     log=app.file_logger)
+        def train(report, stop_event):
+            run_pretraining(report, stop_event, data_dir=args.data_dir, run_dir=args.run_dir,
+                            log=app.file_logger, batch_size=args.batch_size)
 
-    app = TrainingApp(train, title="Tool Calling", preview_mode="text",
+        title, preview_mode = "Language Pretraining", "none"
+    else:
+        from .training import run_training
+
+        def train(report, stop_event):
+            run_training(report, stop_event, data_dir=args.data_dir, run_dir=args.run_dir,
+                         log=app.file_logger)
+
+        title, preview_mode = "Tool Calling", "text"
+
+    app = TrainingApp(train, title=title, preview_mode=preview_mode,
                       log_path=args.run_dir / "training.log")
     app.run()
 

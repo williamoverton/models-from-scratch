@@ -1,8 +1,43 @@
 # Tool Calling
 
 Train a small language model to propose one tool call and write an answer from
-its result. The corpus is synthetic; neither the training dashboard nor the
-model executes a generated call.
+its result. Pretrain it on ordinary text or train it on synthetic tool calls.
+Neither the training dashboard nor the model executes a generated call.
+
+## Pretrain on text
+
+Prepare a frozen local bundle once. The ZIM reader needs `libzim` only during
+preparation; use local article Parquet (`id`, `title`, `text`) to skip that
+dependency. The Q&A reader accepts gzip JSONL shards from the linked
+[Stack Exchange dataset](https://huggingface.co/datasets/flax-sentence-embeddings/stackexchange_title_best_voted_answer_jsonl).
+The downloaded snapshot is revision `88957a0e825f49aeb2a7bfd828cb46b79010b286`.
+
+```sh
+uv run --with libzim==4.1.0 tool-calling prepare-pretrain \
+  --wikipedia /mnt/StorageBox/project-nomad/storage/zim/wikipedia_en_all_maxi_2026-02.zim \
+  --qa /mnt/StorageBox/datasets/stackexchange-title-best-voted-answer \
+  --tokenizer trained-models/tokenizers/simple-wikipedia-comparison/8192.json \
+  --output-dir /mnt/StorageBox/datasets/pretrain-wiki-qa-8k
+
+uv run tool-calling pretrain \
+  --data-dir /mnt/StorageBox/datasets/pretrain-wiki-qa-8k \
+  --run-dir trained-models/tool-calling/runs/pretrain-wiki-qa-8k
+```
+
+The default context is 350 tokens. Preparation splits documents before
+packing and writes disk-backed windows of 351 IDs for shifted inputs and
+targets. Omit `--windows-per-source` to prepare all training windows, or set
+it to cap each source's preparation before an overnight run. Validation uses
+up to 1,024 windows per source. Each preparation uses a new directory; a
+running job never picks up additional shards.
+
+In Textual, press **S** to start or resume, **X** to stop, or **Q** to stop and
+quit. The trainer loops until stopped and targets **90% Wikipedia / 10% Q&A**
+by training target tokens. It reports held-out loss separately for each source.
+`pretrain-latest.pt` stores resumable state; `pretrain-best.pt` stores weights
+at the best weighted validation loss. Use the same data and run directories
+to resume. `--batch-size` defaults to 8; if that does not fit in GPU memory,
+start a new run directory with a lower value.
 
 ## Prepare the data
 
