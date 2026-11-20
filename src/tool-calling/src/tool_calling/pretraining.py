@@ -1,4 +1,4 @@
-"""Train the tool-calling architecture on verified, packed next-token windows."""
+"""Train the tool-calling architecture on packed next-token windows."""
 
 from dataclasses import asdict, dataclass
 from hashlib import file_digest, sha256
@@ -20,6 +20,7 @@ from torch.nn import functional as F
 
 from .checkpoint import lock_run
 from .config import Config
+from .generation import SAMPLE_INTERVAL, create_pretraining_preview
 from .model import LanguageModel
 from .precision import autocast
 
@@ -55,7 +56,7 @@ class _Split:
 @dataclass(frozen=True)
 class _Bundle:
     context_length: int
-    vocab_size: int
+    tokenizer: Tokenizer
     manifest_sha256: str
     tokenizer_sha256: str
     train: dict[str, _Split]
@@ -63,28 +64,29 @@ class _Bundle:
 
 
 def _map_shard(path: Path, rows: int, width: int, digest: str, vocab_size: int,
-               stop_event: Event) -> np.memmap | None:
-    """Hash, check, and map the same open shard, without retaining its tokens in RAM."""
+               stop_event: Event, *, verify_shards: bool) -> np.memmap | None:
+    """Check the shard size and optionally scan the same file before mapping it."""
     if not stat.S_ISREG(path.stat().st_mode):
         raise ValueError(f"Expected a regular shard file: {path}.")
     with path.open("rb") as stream:
         expected_bytes = rows * width * _TOKEN_DTYPE.itemsize
         if os.fstat(stream.fileno()).st_size != expected_bytes:
             raise ValueError(f"Shard byte length does not match the manifest: {path}.")
-        content_hash = sha256()
-        while not stop_event.is_set() and (chunk := stream.read(1024 * 1024)):
-            content_hash.update(chunk)
-            if int(np.frombuffer(chunk, dtype=_TOKEN_DTYPE).max()) >= vocab_size:
-                raise ValueError(f"Shard contains token IDs outside the tokenizer vocabulary: {path}.")
-        if stop_event.is_set():
-            return None
-        if content_hash.hexdigest() != digest:
-            raise ValueError(f"Shard SHA-256 does not match the manifest: {path}.")
+        if verify_shards:
+            content_hash = sha256()
+            while not stop_event.is_set() and (chunk := stream.read(1024 * 1024)):
+                content_hash.update(chunk)
+                if int(np.frombuffer(chunk, dtype=_TOKEN_DTYPE).max()) >= vocab_size:
+                    raise ValueError(f"Shard contains token IDs outside the tokenizer vocabulary: {path}.")
+            if stop_event.is_set():
+                return None
+            if content_hash.hexdigest() != digest:
+                raise ValueError(f"Shard SHA-256 does not match the manifest: {path}.")
         return np.memmap(stream, dtype=_TOKEN_DTYPE, mode="r", shape=(rows, width))
 
 
-def _load_bundle(data_dir: Path, stop_event: Event) -> _Bundle | None:
-    """Verify the prepared manifest, byte-identical tokenizer, and all four splits."""
+def _load_bundle(data_dir: Path, stop_event: Event, *, verify_shards: bool) -> _Bundle | None:
+    """Validate the manifest and tokenizer, then map the four prepared splits."""
     data_dir = data_dir.resolve()
     manifest_path = data_dir / "manifest.json"
     try:
@@ -101,7 +103,8 @@ def _load_bundle(data_dir: Path, stop_event: Event) -> _Bundle | None:
         with tokenizer_path.open("rb") as stream:
             if file_digest(stream, "sha256").hexdigest() != tokenizer_hash:
                 raise ValueError("Tokenizer SHA-256 does not match the manifest.")
-        vocab_size = Tokenizer.load(tokenizer_path).vocab_size
+        tokenizer = Tokenizer.load(tokenizer_path)
+        vocab_size = tokenizer.vocab_size
         with tokenizer_path.open("rb") as stream:
             if file_digest(stream, "sha256").hexdigest() != tokenizer_hash:
                 raise ValueError("Tokenizer changed while loading.")
@@ -129,13 +132,14 @@ def _load_bundle(data_dir: Path, stop_event: Event) -> _Bundle | None:
                         raise ValueError(f"Invalid or repeated shard path: {name}.")
                     if type(rows) is not int or rows < 1 or not isinstance(digest, str):
                         raise ValueError(f"Invalid shard metadata for {name}.")
-                    shard = _map_shard(path, rows, context + 1, digest, vocab_size, stop_event)
+                    shard = _map_shard(path, rows, context + 1, digest, vocab_size, stop_event,
+                                       verify_shards=verify_shards)
                     if shard is None:
                         return None
                     seen.add(path)
                     shards.append(shard)
                 by_source[source] = _Split(shards)
-        return _Bundle(context, vocab_size, sha256(manifest_bytes).hexdigest(), tokenizer_hash,
+        return _Bundle(context, tokenizer, sha256(manifest_bytes).hexdigest(), tokenizer_hash,
                        splits["train"], splits["validation"])
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise ValueError(f"Invalid pretraining bundle at {manifest_path}: {error}") from error
@@ -263,7 +267,7 @@ def _validate(model: LanguageModel, validation: dict[str, _Split], config: Confi
 
 def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir: Path,
            bundle: _Bundle, config: Config, device: torch.device, model: LanguageModel,
-           optimizer: torch.optim.Adam, scaler: torch.amp.GradScaler) -> None:
+           optimizer: torch.optim.Adam, scaler: torch.amp.GradScaler, sample_prompt: str) -> None:
     """Keep the mix, data cursors, validation cadence, and best record stable across resumes."""
     metadata = {
         "format": _CHECKPOINT_FORMAT,
@@ -271,7 +275,7 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
         "settings": asdict(config),
         "manifest_sha256": bundle.manifest_sha256,
         "tokenizer_sha256": bundle.tokenizer_sha256,
-        "vocab_size": bundle.vocab_size,
+        "vocab_size": bundle.tokenizer.vocab_size,
     }
     latest_path = run_dir / _LATEST
     best_path = run_dir / _BEST
@@ -390,6 +394,12 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
             last_reported = progress.step
             measured_steps = 0
             measured_seconds = 0.0
+        if not stopping and (progress.step == first_step or progress.step % SAMPLE_INTERVAL == 0):
+            preview = create_pretraining_preview(
+                model, bundle.tokenizer, sample_prompt, config, device, progress.step, stop_event,
+            )
+            if preview is not None and not stop_event.is_set():
+                report(TrainingProgress(progress.step, None, {}, preview))
 
     if asdict(progress) != saved:
         save_latest()
@@ -415,7 +425,8 @@ def _report_training(report: ProgressCallback, log: Logger, progress: _Progress,
 
 
 def run_pretraining(report: ProgressCallback, stop_event: Event, *, data_dir: Path,
-                    run_dir: Path, log: Logger, batch_size: int) -> None:
+                    run_dir: Path, log: Logger, batch_size: int, sample_prompt: str,
+                    verify_shards: bool = False) -> None:
     """Run resumable CUDA FP16/Adam next-token pretraining until Stop or Quit."""
     if stop_event.is_set():
         return
@@ -425,13 +436,14 @@ def run_pretraining(report: ProgressCallback, stop_event: Event, *, data_dir: Pa
         raise RuntimeError("Tool-calling pretraining requires CUDA.")
     device = torch.device("cuda", torch.cuda.current_device())
     with lock_run(run_dir):
-        log.info("Verifying pretraining data: %s", data_dir)
-        bundle = _load_bundle(data_dir, stop_event)
+        log.info("Opening pretraining data: %s (full shard verification %s)",
+                 data_dir, "on" if verify_shards else "off")
+        bundle = _load_bundle(data_dir, stop_event, verify_shards=verify_shards)
         if bundle is None or stop_event.is_set():
             return
         config = Config(context_length=bundle.context_length, batch_size=batch_size)
         torch.manual_seed(config.seed)
-        model = LanguageModel(bundle.vocab_size, config).to(device)
+        model = LanguageModel(bundle.tokenizer.vocab_size, config).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
         scaler = torch.amp.GradScaler("cuda")
         log.info("%s, FP16 autocast, Adam, %s parameters, context %s, batch size %s, 90%% Wikipedia / 10%% Q&A",
@@ -441,4 +453,4 @@ def run_pretraining(report: ProgressCallback, stop_event: Event, *, data_dir: Pa
             log.info("%s: %s training rows, %s validation rows", source, len(bundle.train[source]),
                      len(bundle.validation[source]))
         _train(report, stop_event, log=log, run_dir=run_dir, bundle=bundle, config=config,
-               device=device, model=model, optimizer=optimizer, scaler=scaler)
+               device=device, model=model, optimizer=optimizer, scaler=scaler, sample_prompt=sample_prompt)

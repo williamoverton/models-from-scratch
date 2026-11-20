@@ -25,15 +25,15 @@ class Config:
     """Model context comes exclusively from the prepared data manifest."""
 
     context_length: int
-    batch_size: int = 16
+    batch_size: int = 32
     embedding_dim: int = 512
     feed_forward_dim: int = 1024
     feed_forward_type: Literal["swiglu", "relu"] = "swiglu"
     seed: int = 42
     block_schedule: tuple[BlockSpec | Loop, ...] = (
-        ("local", 64), "global",
-        Loop(blocks=("convolution", ("local", 128), ("local", 64), "global"), passes=3),
-        ("local", 64), "global",
+        "global", "global",
+        Loop(blocks=("convolution", ("local", 64), ("local", 128), "convolution", ("local", 64), "global"), passes=3),
+        "global", "global",
     )
     conv_kernel_size: int = 7
     num_heads: int = 8

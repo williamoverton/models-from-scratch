@@ -1,4 +1,4 @@
-"""Sample two fixed, read-only continuations without executing a generated call."""
+"""Generate read-only text previews for tool training and pretraining."""
 
 from threading import Event
 
@@ -88,3 +88,25 @@ def create_preview(model, tokenizer: Tokenizer, config: Config, device: torch.de
         return TextGenerationPreview(step, tuple(examples))
     finally:
         model.train(was_training)
+
+
+@torch.no_grad()
+def create_pretraining_preview(model, tokenizer: Tokenizer, prompt: str, config: Config,
+                               device: torch.device, step: int,
+                               stop_event: Event) -> TextGenerationPreview | None:
+    """Continue an ordinary-text prompt until the document ends or the budget is used."""
+    if stop_event.is_set():
+        return None
+    prefix = tokenizer.encode(prompt)
+    terminators = {tokenizer.control_token_ids["<END_OF_DOCUMENT>"]}
+    was_training = model.training
+    model.eval()
+    try:
+        generated = _sample_tokens(model, prefix, terminators, config, device, stop_event)
+    finally:
+        model.train(was_training)
+    if generated is None or stop_event.is_set():
+        return None
+    completion = (tokenizer.decode(generated, skip_control_tokens=True)
+                  if generated else "No room to generate within this bundle's context limit.")
+    return TextGenerationPreview(step, (TextGenerationExample("Generated continuation", prompt, completion),))

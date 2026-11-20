@@ -50,6 +50,11 @@ Preparation parses and tokenizes in worker processes, using all available
 logical CPUs by default. Use `--workers N` to leave CPU capacity for other jobs.
 It prints per-source window counts while it runs.
 
+Startup checks the manifest, tokenizer hash, and shard paths and sizes. It
+does not scan shard contents by default. Add `--verify-shards` to `pretrain`
+to read every shard and check its SHA-256 and token ID range. Without the flag,
+same-size shard changes aren't detected at startup.
+
 In Textual, press **S** to start or resume, **X** to stop, or **Q** to stop and
 quit. The trainer loops until stopped and targets **90% Wikipedia / 10% Q&A**
 by training target tokens. It reports held-out loss separately for each source.
@@ -57,6 +62,11 @@ by training target tokens. It reports held-out loss separately for each source.
 at the best weighted validation loss. Use the same data and run directories
 to resume. `--batch-size` defaults to 8; if that does not fit in GPU memory,
 start a new run directory with a lower value.
+
+The **Generated examples** panel samples a continuation after the first
+completed update of each session and every 500 updates. It starts with
+`Training an LLM is` by default. Pass `--sample-prompt "Your opening text"`
+to change the prompt without changing checkpoint compatibility.
 
 ## Prepare the data
 
