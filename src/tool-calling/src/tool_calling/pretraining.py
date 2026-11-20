@@ -18,7 +18,7 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
-from .checkpoint import lock_run
+from .checkpoint import lock_run, resume_settings
 from .config import Config
 from .generation import SAMPLE_INTERVAL, create_pretraining_preview
 from .model import LanguageModel
@@ -212,7 +212,10 @@ def _restore(path: Path, metadata: dict, model: LanguageModel, optimizer: torch.
         if not stat.S_ISREG(mode):
             raise ValueError("Expected a regular checkpoint file.")
         saved = torch.load(path, map_location="cpu", weights_only=True)
-        if saved["kind"] != "latest" or saved["metadata"] != metadata:
+        previous = saved["metadata"]
+        saved_identity = previous | {"settings": resume_settings(previous["settings"])}
+        run_identity = metadata | {"settings": resume_settings(metadata["settings"])}
+        if saved["kind"] != "latest" or saved_identity != run_identity:
             raise ValueError("Checkpoint format, prepared bundle, or settings differ.")
         progress = _Progress(**saved["progress"])
         if (any(type(value) is not int or value < 0 for value in
@@ -409,29 +412,23 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
 
 def _report_training(report: ProgressCallback, log: Logger, progress: _Progress, tokens_per_step: int,
                      measured_steps: int, seconds: float, validation_metrics: dict[str, float]) -> None:
-    """Report lifetime source proportions and recent successful-target throughput."""
-    counts = progress.source_batches()
-    proportions = {source: 100 * count / progress.step for source, count in counts.items()}
+    """Report loss and recent successful-target throughput."""
     tokens_per_second = measured_steps * tokens_per_step / seconds
-    log.info("Step %s loss %.4f, %.0f tokens/s, Wikipedia %s batches (%.1f%%), Q&A %s batches (%.1f%%)",
-             progress.step, progress.last_loss, tokens_per_second, counts["wikipedia"], proportions["wikipedia"],
-             counts["qa"], proportions["qa"])
+    log.info("Step %s loss %.4f, %.0f tokens/s",
+             progress.step, progress.last_loss, tokens_per_second)
     report(TrainingProgress(progress.step, None, {
         "loss": progress.last_loss, "tokens/s": tokens_per_second,
         "completed tokens": progress.step * tokens_per_step, "overflow skips": progress.overflow_skips,
-        **{f"{source} batches (%)": share for source, share in proportions.items()},
         **validation_metrics,
     }))
 
 
 def run_pretraining(report: ProgressCallback, stop_event: Event, *, data_dir: Path,
-                    run_dir: Path, log: Logger, batch_size: int, sample_prompt: str,
+                    run_dir: Path, log: Logger, sample_prompt: str,
                     verify_shards: bool = False) -> None:
     """Run resumable CUDA FP16/Adam next-token pretraining until Stop or Quit."""
     if stop_event.is_set():
         return
-    if type(batch_size) is not int or batch_size < 1:
-        raise ValueError("Pretraining batch size must be a positive integer.")
     if not torch.cuda.is_available():
         raise RuntimeError("Tool-calling pretraining requires CUDA.")
     device = torch.device("cuda", torch.cuda.current_device())
@@ -441,16 +438,13 @@ def run_pretraining(report: ProgressCallback, stop_event: Event, *, data_dir: Pa
         bundle = _load_bundle(data_dir, stop_event, verify_shards=verify_shards)
         if bundle is None or stop_event.is_set():
             return
-        config = Config(context_length=bundle.context_length, batch_size=batch_size)
+        config = Config(context_length=bundle.context_length)
         torch.manual_seed(config.seed)
         model = LanguageModel(bundle.tokenizer.vocab_size, config).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
         scaler = torch.amp.GradScaler("cuda")
-        log.info("%s, FP16 autocast, Adam, %s parameters, context %s, batch size %s, 90%% Wikipedia / 10%% Q&A",
+        log.info("%s, FP16 autocast, Adam, %s parameters, context %s, batch size %s",
                  device, sum(parameter.numel() for parameter in model.parameters()), config.context_length,
                  config.batch_size)
-        for source in _SOURCES:
-            log.info("%s: %s training rows, %s validation rows", source, len(bundle.train[source]),
-                     len(bundle.validation[source]))
         _train(report, stop_event, log=log, run_dir=run_dir, bundle=bundle, config=config,
                device=device, model=model, optimizer=optimizer, scaler=scaler, sample_prompt=sample_prompt)

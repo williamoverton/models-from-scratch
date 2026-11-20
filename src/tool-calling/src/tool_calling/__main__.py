@@ -45,7 +45,6 @@ def main() -> None:
     pretrain = commands.add_parser("pretrain", help="Open the next-token pretraining dashboard.")
     pretrain.add_argument("--data-dir", type=Path, required=True, help="Directory from prepare-pretrain.")
     pretrain.add_argument("--run-dir", type=Path, required=True, help="Directory for pretraining checkpoints and log.")
-    pretrain.add_argument("--batch-size", type=_positive_int, default=8)
     pretrain.add_argument("--sample-prompt", default="Training an LLM is",
                           help="Text to continue in the preview (default: %(default)s).")
     pretrain.add_argument("--verify-shards", action="store_true",
@@ -90,7 +89,7 @@ def _open_dashboard(args: argparse.Namespace) -> None:
 
         def train(report, stop_event):
             run_pretraining(report, stop_event, data_dir=args.data_dir, run_dir=args.run_dir,
-                            log=app.file_logger, batch_size=args.batch_size,
+                            log=app.file_logger,
                             sample_prompt=args.sample_prompt, verify_shards=args.verify_shards)
 
         title, preview_mode = "Language Pretraining", "text"

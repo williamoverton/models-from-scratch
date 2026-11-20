@@ -5,6 +5,7 @@
 - Pretraining prepares disk-backed next-token windows separately from tool-call data. Keep source readers out of the training loop; split by document before packing and bind resume to the prepared manifest and tokenizer.
 - Always validate pretraining shard paths and sizes. Scan shard contents for hashes and token ID ranges only with `--verify-shards`; the flag does not affect checkpoint compatibility.
 - The prepared manifest owns the context limit for both the loader and model. Do not drop or truncate overlength data or weaken artifact identity checks. Keep generated corpora, tokenizers, logs, and run checkpoints in ignored local paths.
+- Keep model and training settings shared in `config.py`. Both training modes use `Config.batch_size` directly; do not add CLI overrides for it.
 - Keep window sizes and shared loops inline in `Config.block_schedule`. A `Loop` contains ordinary block specs, never other loops. Changing the schedule requires a fresh run, not a checkpoint migration.
 - Use the pinned Turing FlashAttention fork for FP16 local attention and causal SDPA for global attention. Do not retain FlexAttention or a dense local-mask fallback. Keep the prebuilt wheel in the ignored workspace `.wheels/` directory and rebuild it if the pinned PyTorch ABI changes.
 - Training is CUDA-only and uses Adam with FP16 autocast and gradient scaling. Do not add alternate device, precision, optimizer, or checkpoint compatibility paths. Stop and Quit must preserve the latest completed training state without publishing a partially generated preview.

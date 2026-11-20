@@ -22,7 +22,7 @@ class Loop:
 
 @dataclass(frozen=True)
 class Config:
-    """Model context comes exclusively from the prepared data manifest."""
+    """Shared settings for pretraining and tool training; context comes from the manifest."""
 
     context_length: int
     batch_size: int = 32

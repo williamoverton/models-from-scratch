@@ -60,8 +60,14 @@ quit. The trainer loops until stopped and targets **90% Wikipedia / 10% Q&A**
 by training target tokens. It reports held-out loss separately for each source.
 `pretrain-latest.pt` stores resumable state; `pretrain-best.pt` stores weights
 at the best weighted validation loss. Use the same data and run directories
-to resume. `--batch-size` defaults to 8; if that does not fit in GPU memory,
-start a new run directory with a lower value.
+to resume. Both training modes take their batch size from `Config.batch_size`
+in [`config.py`](src/tool_calling/config.py), with no CLI override. To resume
+a run, keep the batch size it was started with. To change the batch size, use
+a new run directory.
+You can change `eval_interval`, `eval_batches`, and `checkpoint_interval`
+between sessions without blocking resume. Changing `eval_batches` changes the
+held-out sample size, so validation losses before and after may not be directly
+comparable.
 
 The **Generated examples** panel samples a continuation after the first
 completed update of each session and every 500 updates. It starts with

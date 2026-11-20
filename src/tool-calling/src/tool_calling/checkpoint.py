@@ -32,12 +32,12 @@ def lock_run(directory: Path):
         os.close(fd)
 
 
-def _settings(config: Config) -> dict:
-    settings = asdict(config)
-    # Reporting and save cadence do not change an optimizer update.
-    for name in ("eval_interval", "eval_batches", "checkpoint_interval"):
-        settings.pop(name)
-    return settings
+def resume_settings(settings: dict) -> dict:
+    """Keep settings that affect optimizer updates, not reporting or save cadence."""
+    return {
+        name: value for name, value in settings.items()
+        if name not in ("eval_interval", "eval_batches", "checkpoint_interval")
+    }
 
 
 def _floating_tensors(value, path):
@@ -77,7 +77,7 @@ def read_checkpoint(path: Path, config: Config, manifest_digest: str) -> dict | 
             raise ValueError("Unsupported checkpoint format; expected a CUDA FP16/Adam checkpoint.")
         if state["manifest_sha256"] != manifest_digest:
             raise ValueError("Prepared bundle differs from the one used by this checkpoint.")
-        expected = _settings(config)
+        expected = resume_settings(asdict(config))
         saved = state["settings"]
         if saved != expected:
             changed = sorted(key for key in saved.keys() | expected.keys()
@@ -114,7 +114,7 @@ def save_checkpoint(path: Path, model: torch.nn.Module, optimizer: torch.optim.A
         "format": _FORMAT,
         "version": _VERSION,
         "step": step,
-        "settings": _settings(config),
+        "settings": resume_settings(asdict(config)),
         "manifest_sha256": manifest_digest,
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
