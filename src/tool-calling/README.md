@@ -28,23 +28,28 @@ dependency. The Q&A reader accepts gzip JSONL shards from the linked
 [Stack Exchange dataset](https://huggingface.co/datasets/flax-sentence-embeddings/stackexchange_title_best_voted_answer_jsonl).
 The downloaded snapshot is revision `88957a0e825f49aeb2a7bfd828cb46b79010b286`.
 
+The prepared 1,024-token bundle is already available at
+`/mnt/StorageBox/datasets/pretrain-wiki-qa-8k-ctx1024`. Skip the preparation
+command below if that bundle exists.
+
 ```sh
 uv run --with libzim==4.1.0 tool-calling prepare-pretrain \
   --wikipedia /mnt/StorageBox/project-nomad/storage/zim/wikipedia_en_all_maxi_2026-02.zim \
   --qa /mnt/StorageBox/datasets/stackexchange-title-best-voted-answer \
   --tokenizer trained-models/tokenizers/simple-wikipedia-comparison/8192.json \
-  --output-dir /mnt/StorageBox/datasets/pretrain-wiki-qa-8k
+  --output-dir /mnt/StorageBox/datasets/pretrain-wiki-qa-8k-ctx1024
 
 uv run tool-calling pretrain \
-  --data-dir /mnt/StorageBox/datasets/pretrain-wiki-qa-8k \
-  --run-dir trained-models/tool-calling/runs/pretrain-wiki-qa-8k-looped
+  --data-dir /mnt/StorageBox/datasets/pretrain-wiki-qa-8k-ctx1024 \
+  --run-dir trained-models/tool-calling/runs/pretrain-wiki-qa-8k-1024
 ```
 
-The default context is 350 tokens. Preparation splits documents before
-packing and writes disk-backed windows of 351 IDs for shifted inputs and
-targets. Omit `--windows-per-source` to prepare all training windows, or set
-it to cap each source's preparation before an overnight run. Validation uses
-up to 1,024 windows per source. Each preparation uses a new directory; a
+The default context is 1,024 tokens. Preparation splits documents before
+packing and writes disk-backed windows of 1,025 IDs for shifted inputs and
+targets. Existing 350-token bundles keep their original context; prepare a
+new bundle to train at 1,024. Omit `--windows-per-source` to prepare all training
+windows, or set it to cap each source's preparation before an overnight run.
+Validation uses up to 1,024 windows per source. Each preparation uses a new directory; a
 running job never picks up additional shards.
 Preparation parses and tokenizes in worker processes, using all available
 logical CPUs by default. Use `--workers N` to leave CPU capacity for other jobs.
@@ -55,19 +60,58 @@ does not scan shard contents by default. Add `--verify-shards` to `pretrain`
 to read every shard and check its SHA-256 and token ID range. Without the flag,
 same-size shard changes aren't detected at startup.
 
+### Run without the dashboard
+
+Add `--headless` to `train` or `pretrain` to start immediately without a TTY:
+
+```sh
+uv run --locked tool-calling pretrain --headless \
+  --data-dir /mnt/StorageBox/datasets/pretrain-wiki-qa-8k-ctx1024 \
+  --run-dir trained-models/tool-calling/runs/pretrain-wiki-qa-8k-1024
+```
+
+Metrics, text previews, and errors stream to stderr and append to
+`<run-dir>/training.log`. Send `SIGTERM` to the training PID printed at
+startup (or press Ctrl+C in the foreground) and wait for `Training stopped.`
+The worker saves its latest completed update before exiting. A failed run
+exits with status 1; a cooperative stop exits with status 0.
+
+### Checkpoints and previews
+
 In Textual, press **S** to start or resume, **X** to stop, or **Q** to stop and
-quit. The trainer loops until stopped and targets **90% Wikipedia / 10% Q&A**
-by training target tokens. It reports held-out loss separately for each source.
+quit. Pretraining uses fused AdamW and targets **90% Wikipedia / 10% Q&A**
+by training target tokens. In `Config`, `pretrain_*` settings define a linear
+warmup over 4M target tokens to `3e-4`, then cosine decay to `3e-5` at 200M
+target tokens. Only completed updates advance the schedule. The last update
+uses a full batch, so the target rounds up to the next batch boundary. The
+trainer logs the learning rate, validates, and saves at the end.
+
 `pretrain-latest.pt` stores resumable state; `pretrain-best.pt` stores weights
-at the best weighted validation loss. Use the same data and run directories
-to resume. Both training modes take their batch size from `Config.batch_size`
-in [`config.py`](src/tool_calling/config.py), with no CLI override. To resume
-a run, keep the batch size it was started with. To change the batch size, use
-a new run directory.
-You can change `eval_interval`, `eval_batches`, and `checkpoint_interval`
-between sessions without blocking resume. Changing `eval_batches` changes the
-held-out sample size, so validation losses before and after may not be directly
-comparable.
+at the best weighted validation loss. To resume pretraining, use the same data
+and run directories, batch size, seed, and learning-rate schedule. The block
+schedule may change if the parameter names and shapes still match. Resume keeps
+AdamW moments, scaler, data cursor, and schedule position. Checkpoints from
+the old Adam optimizer can only initialize weights via `--init-from`, if
+the model and tokenizer still match. Historical best loss may not be comparable
+after a block schedule or validation-sample change.
+
+To reuse weights without continuing the old run state, pass `--init-from` with
+a latest or best pretraining checkpoint and a separate run directory:
+
+```sh
+uv run --locked tool-calling pretrain \
+  --data-dir /mnt/StorageBox/datasets/pretrain-wiki-qa-8k-ctx1024 \
+  --run-dir trained-models/tool-calling/runs/pretrain-wiki-qa-8k-1024-warm \
+  --init-from trained-models/tool-calling/runs/pretrain-wiki-qa-8k-1024/pretrain-best.pt
+```
+
+This requires the same tokenizer and matching parameter names and shapes.
+Step, data cursor, validation history, optimizer state, and scaler start fresh.
+Once the new run has a checkpoint, omit `--init-from` to resume it.
+
+On a non-finite training loss, pretraining replays the failed batch before
+backpropagation and logs the first non-finite operation it can observe,
+including its module and loop pass. It still stops without applying the update.
 
 The **Generated examples** panel samples a continuation after the first
 completed update of each session and every 500 updates. It starts with
@@ -80,7 +124,7 @@ Set up the repository environment using the [development guide](../../DEVELOMENT
 Run these commands from the workspace root:
 
 ```sh
-uv run tool-calling prepare-data --output-dir datasets/tool-calling
+uv run tool-calling prepare-data --output-dir datasets/tool-calling-1024
 ```
 
 Preparation uses seed 42 by default and refuses an existing output path.
@@ -96,7 +140,7 @@ Older prepared JSONL bundles are not supported. Prepare a new bundle in a
 new directory, and start training in a new run directory: checkpoints are
 bound to the original bundle's manifest.
 
-The context limit defaults to 350 tokens. If preparation reports overlength
+The context limit defaults to 1,024 tokens. If preparation reports overlength
 rows, retry with `--context-length N` at least as large as the reported
 maximum, using a new output directory. Nothing is silently truncated. The
 trainer uses the limit in the manifest; a larger limit can use more GPU memory.
@@ -107,8 +151,8 @@ artifacts out of version control.
 
 ```sh
 uv run tool-calling train \
-  --data-dir datasets/tool-calling \
-  --run-dir trained-models/tool-calling/runs/looped
+  --data-dir datasets/tool-calling-1024 \
+  --run-dir trained-models/tool-calling/runs/looped-1024
 ```
 
 Press **S** to start or resume. Training runs until you press **X** to stop or
@@ -145,24 +189,47 @@ change the block order. The default is:
 
 | Stage | Block order |
 | --- | --- |
-| Input · once | Local-64 → Global |
-| Shared core · three passes | Conv-7 → Local-128 → Local-64 → Global |
-| Output · once | Local-64 → Global |
+| Input · once | Conv-7 → Global |
+| Shared core · two passes | Conv-7 → Local-64 → Conv-7 → Global → Conv-7 → Local-128 → Conv-7 → Global |
+| Output · once | Conv-7 → Global |
 
-This executes 16 blocks using eight distinct sets of block weights. Every block
-includes a SwiGLU feed-forward network. The first core pass takes the input
-stack's output directly. Before each later pass, that same saved output is
-added to the latest core state and normalized with a shared LayerNorm.
+The model uses a 768-dimensional hidden state, 12 attention heads of 64
+dimensions each, and a 1,536-dimensional SwiGLU intermediate layer.
+
+The first core pass takes the input stack's output directly. Before the second
+pass, that saved output is added to the latest core state and normalized with
+LayerNorm. Gradients flow through both passes during training.
+
+Each mixer and feed-forward branch applies RMSNorm to its input and to its
+update before adding that update to the residual stream. The residual itself
+bypasses the branch.
 
 Use `("local", 64)` for a 64-token causal window (including the current token),
 `"global"` for full causal attention, or `"convolution"` for causal convolution.
-`Loop(blocks=(...), passes=3)` repeats a sequence of these ordinary blocks;
-loops do not nest.
+Use `"l2-norm"` anywhere in the outer stack or inside a `Loop` to normalize
+each token's hidden vector to unit L2 norm (with an epsilon floor). It computes
+in FP32, preserves the input dtype, and has no learned parameters or
+feed-forward network. Loops do not nest.
+
+`Config.swiglu_product_limit` clamps the signed SwiGLU product before its
+down-projection in every block, including every shared-core pass. The default
+is `2048.0`; `None` disables it. The clamp leaves in-range products unchanged
+and cannot repair NaNs produced earlier. The SwiGLU down-projection runs in
+FP32 and keeps its output in FP32 through the residual addition. Its FP16
+output overflowed even with the clamp and additional scaling. Gate and value
+projections still use FP16 autocast.
+
+Short convolution keeps its input projection under FP16 autocast, then uses
+FP32 for both gate products, the depthwise convolution, and the output
+projection. The FP16 output projection overflowed on a finite gated input.
 
 Local attention uses the Turing fork's native FP16 sliding-window kernels.
-Global attention remains on causal PyTorch SDPA. The number of visible tokens
-and the checkpoint parameter layout are unchanged by the backend switch.
+Global attention remains on causal PyTorch SDPA. Both attention mixers use
+FP32 for the output projection into the residual stream; the attention
+kernels and query, key, value, and gate projections are unchanged.
 
-Use a new `--run-dir` when changing the schedule, including when switching from
-the previous non-looped model. Existing prepared data can be reused; the
-default context is still 350 tokens.
+Tool training requires a new `--run-dir` when changing the schedule.
+Pretraining can resume parameter-compatible changes or warm-start a separate
+run as described above. Existing prepared data can be reused.
+The sandwich RMSNorm architecture changes learned parameter names and requires
+a fresh run; old LayerNorm checkpoints cannot initialize it.

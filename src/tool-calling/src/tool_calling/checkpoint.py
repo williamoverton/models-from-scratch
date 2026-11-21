@@ -33,10 +33,11 @@ def lock_run(directory: Path):
 
 
 def resume_settings(settings: dict) -> dict:
-    """Keep settings that affect optimizer updates, not reporting or save cadence."""
+    """Keep tool-training settings that affect optimizer updates."""
     return {
         name: value for name, value in settings.items()
         if name not in ("eval_interval", "eval_batches", "checkpoint_interval")
+        and not name.startswith("pretrain_")
     }
 
 

@@ -69,7 +69,9 @@ class MultiHeadAttention(nn.Module):
         if self.head_gate is not None:
             outputs = outputs * torch.sigmoid(self.head_gate(vectors)).unsqueeze(-1)
         combined = outputs.flatten(2)
-        return self.output(combined)
+        # Keep the branch output in FP32 through the residual addition.
+        with torch.autocast(device_type=vectors.device.type, enabled=False):
+            return self.output(combined.float())
 
 
 class GatedShortConvolution(nn.Module):
@@ -85,11 +87,13 @@ class GatedShortConvolution(nn.Module):
 
     def forward(self, vectors: torch.Tensor) -> torch.Tensor:
         input_gate, values, output_gate = self.input_projection(vectors).chunk(3, dim=-1)
-        gated_values = (input_gate * values).transpose(1, 2)
-        # Only pad on the left: future tokens never enter the convolution.
-        padded = F.pad(gated_values, (self.kernel_size - 1, 0))
-        mixed = self.convolution(padded).transpose(1, 2)
-        return self.output_projection(output_gate * mixed)
+        # Both gate products and the convolution can amplify values before the residual add.
+        with torch.autocast(device_type=vectors.device.type, enabled=False):
+            gated_values = (input_gate.float() * values).transpose(1, 2)
+            # Only pad on the left: future tokens never enter the convolution.
+            padded = F.pad(gated_values, (self.kernel_size - 1, 0))
+            mixed = self.convolution(padded).transpose(1, 2)
+            return self.output_projection(output_gate * mixed)
 
 
 class SwiGLUFeedForward(nn.Module):
@@ -100,10 +104,17 @@ class SwiGLUFeedForward(nn.Module):
         self.gate_projection = nn.Linear(config.embedding_dim, config.feed_forward_dim)
         self.value_projection = nn.Linear(config.embedding_dim, config.feed_forward_dim)
         self.output_projection = nn.Linear(config.feed_forward_dim, config.embedding_dim)
+        self.product_limit = config.swiglu_product_limit
 
     def forward(self, vectors: torch.Tensor) -> torch.Tensor:
         gate = F.silu(self.gate_projection(vectors))
-        return self.output_projection(gate * self.value_projection(vectors))
+        product = gate * self.value_projection(vectors)
+        if self.product_limit is not None:
+            # Bound what the down-projection sees without rescaling ordinary activations.
+            product = product.clamp(-self.product_limit, self.product_limit)
+        # Keep the affine output in FP32 through the residual addition.
+        with torch.autocast(device_type=vectors.device.type, enabled=False):
+            return self.output_projection(product.float())
 
 
 class TransformerBlock(nn.Module):
@@ -111,7 +122,8 @@ class TransformerBlock(nn.Module):
 
     def __init__(self, config: Config, spec: BlockSpec):
         super().__init__()
-        self.attention_norm = nn.LayerNorm(config.embedding_dim)
+        self.attention_norm = nn.RMSNorm(config.embedding_dim, eps=1e-5)
+        self.post_mixer_norm = nn.RMSNorm(config.embedding_dim, eps=1e-5)
         match spec:
             case "convolution":
                 self.mixer = GatedShortConvolution(config)
@@ -121,7 +133,8 @@ class TransformerBlock(nn.Module):
                 self.mixer = MultiHeadAttention(config, window=window)
             case _:
                 raise ValueError(f"Invalid block specification: {spec!r}")
-        self.feed_forward_norm = nn.LayerNorm(config.embedding_dim)
+        self.feed_forward_norm = nn.RMSNorm(config.embedding_dim, eps=1e-5)
+        self.post_feed_forward_norm = nn.RMSNorm(config.embedding_dim, eps=1e-5)
         self.feed_forward = (
             SwiGLUFeedForward(config) if config.feed_forward_type == "swiglu"
             else nn.Sequential(
@@ -132,8 +145,25 @@ class TransformerBlock(nn.Module):
         )
 
     def forward(self, vectors: torch.Tensor) -> torch.Tensor:
-        vectors = vectors + self.mixer(self.attention_norm(vectors))
-        return vectors + self.feed_forward(self.feed_forward_norm(vectors))
+        # Normalize each branch update in FP32 before adding it to the residual.
+        mixed = self.mixer(self.attention_norm(vectors))
+        vectors = vectors + self.post_mixer_norm(mixed.float())
+        features = self.feed_forward(self.feed_forward_norm(vectors))
+        return vectors + self.post_feed_forward_norm(features.float())
+
+
+class L2NormBlock(nn.Module):
+    """Normalize each token's hidden vector without learned parameters."""
+
+    def forward(self, vectors: torch.Tensor) -> torch.Tensor:
+        return F.normalize(vectors.float(), dim=-1, eps=1e-6).to(vectors.dtype)
+
+
+def _build_block(config: Config, spec: BlockSpec) -> nn.Module:
+    """Build a non-loop block for either the outer stack or a shared core."""
+    if spec == "l2-norm":
+        return L2NormBlock()
+    return TransformerBlock(config, spec)
 
 
 class LoopBlock(nn.Module):
@@ -141,7 +171,7 @@ class LoopBlock(nn.Module):
 
     def __init__(self, config: Config, spec: Loop):
         super().__init__()
-        self.core = nn.Sequential(*(TransformerBlock(config, block) for block in spec.blocks))
+        self.core = nn.Sequential(*(_build_block(config, block) for block in spec.blocks))
         self.passes = spec.passes
         self.reentry_norm = nn.LayerNorm(config.embedding_dim) if self.passes > 1 else None
 
@@ -163,7 +193,7 @@ class LanguageModel(nn.Module):
             raise ValueError("Embedding width must be divisible by the head count.")
         self.embeddings = InputEmbeddings(vocab_size, config)
         self.blocks = nn.ModuleList(
-            LoopBlock(config, spec) if isinstance(spec, Loop) else TransformerBlock(config, spec)
+            LoopBlock(config, spec) if isinstance(spec, Loop) else _build_block(config, spec)
             for spec in config.block_schedule
         )
         self.final_norm = nn.LayerNorm(config.embedding_dim)

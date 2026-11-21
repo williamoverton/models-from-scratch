@@ -15,7 +15,7 @@ import pyarrow.parquet as pq
 from .data_generation import DEFAULT_SEED, SPLITS, write_structured_splits
 from .framing import CONTROL_TOKENS, format_record, iter_text_fields
 
-DEFAULT_CONTEXT_LENGTH = 350
+DEFAULT_CONTEXT_LENGTH = 1024
 MANIFEST_FORMAT = "tool-calling-data"
 MANIFEST_VERSION = 2
 ENCODED_SCHEMA = pa.schema([

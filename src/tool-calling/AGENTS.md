@@ -6,10 +6,12 @@
 - Always validate pretraining shard paths and sizes. Scan shard contents for hashes and token ID ranges only with `--verify-shards`; the flag does not affect checkpoint compatibility.
 - The prepared manifest owns the context limit for both the loader and model. Do not drop or truncate overlength data or weaken artifact identity checks. Keep generated corpora, tokenizers, logs, and run checkpoints in ignored local paths.
 - Keep model and training settings shared in `config.py`. Both training modes use `Config.batch_size` directly; do not add CLI overrides for it.
-- Keep window sizes and shared loops inline in `Config.block_schedule`. A `Loop` contains ordinary block specs, never other loops. Changing the schedule requires a fresh run, not a checkpoint migration.
+- Keep window sizes and shared loops inline in `Config.block_schedule`. A `Loop` contains ordinary block specs, never other loops. Tool training requires an identical schedule on resume; pretraining accepts changes with matching parameter names and shapes while preserving the bundle, batch size, and seed.
+- Use sandwich RMSNorm around the mixer and feed-forward branches: normalize branch inputs and updates, not the residual addition. Keep full backpropagation through shared-core passes.
+- Use `"l2-norm"` for standalone, parameter-free per-token L2 normalization in a schedule. It computes in FP32 and preserves the input dtype.
 - Use the pinned Turing FlashAttention fork for FP16 local attention and causal SDPA for global attention. Do not retain FlexAttention or a dense local-mask fallback. Keep the prebuilt wheel in the ignored workspace `.wheels/` directory and rebuild it if the pinned PyTorch ABI changes.
-- Training is CUDA-only and uses Adam with FP16 autocast and gradient scaling. Do not add alternate device, precision, optimizer, or checkpoint compatibility paths. Stop and Quit must preserve the latest completed training state without publishing a partially generated preview.
-- Training runs without a step ceiling and reports completed steps without a total. Keep periodic saves and previews independent of cooperative Stop and Quit.
+- Training is CUDA-only with FP16 autocast and gradient scaling. Pretraining uses fused AdamW; tool training uses Adam. Stop and Quit must preserve the latest completed state without publishing a partially generated preview.
+- Pretraining reports a total and stops at its configured target-token budget rounded up to a full update. Skipped updates do not advance its schedule. Tool training runs without a step ceiling. Keep periodic saves and previews independent of cooperative Stop and Quit.
 - Keep the fixed preview's generated call separate from the answer conditioned on a reference call and result. The dashboard receives literal display text, not model state or token IDs.
 - Pretraining samples use the verified bundle tokenizer and the same sampler as tool previews. Keep the preview prompt out of checkpoint settings and publish previews independently of training metrics.
 - Keep the README current with launch, preparation, and recovery commands. Follow the root policy on explicit test and smoke-run authorization.

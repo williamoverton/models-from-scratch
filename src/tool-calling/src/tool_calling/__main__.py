@@ -2,6 +2,7 @@
 
 import argparse
 import os
+from functools import partial
 from pathlib import Path
 
 from .data_generation import DEFAULT_SEED
@@ -45,10 +46,15 @@ def main() -> None:
     pretrain = commands.add_parser("pretrain", help="Open the next-token pretraining dashboard.")
     pretrain.add_argument("--data-dir", type=Path, required=True, help="Directory from prepare-pretrain.")
     pretrain.add_argument("--run-dir", type=Path, required=True, help="Directory for pretraining checkpoints and log.")
+    pretrain.add_argument("--init-from", type=Path,
+                          help="Load model weights from a pretraining checkpoint into a fresh run.")
     pretrain.add_argument("--sample-prompt", default="Training an LLM is",
                           help="Text to continue in the preview (default: %(default)s).")
     pretrain.add_argument("--verify-shards", action="store_true",
                           help="Scan every shard for SHA-256 and token ID validity before training.")
+    for command in (train, pretrain):
+        command.add_argument("--headless", action="store_true",
+                             help="Start immediately without the dashboard; SIGINT or SIGTERM saves and stops.")
     args = parser.parse_args()
     if args.command == "pretrain" and not args.sample_prompt.strip():
         pretrain.error("--sample-prompt must contain non-whitespace text.")
@@ -78,33 +84,38 @@ def main() -> None:
         print(f"Prepared {args.output_dir} ({counts}; context length: {manifest['context_length']}).")
         return
 
-    _open_dashboard(args)
+    raise SystemExit(_run_training(args))
 
 
-def _open_dashboard(args: argparse.Namespace) -> None:
-    from model_training.app import TrainingApp
-
+def _run_training(args: argparse.Namespace) -> int:
+    """Send the same training worker to the dashboard or the headless runner."""
     if args.command == "pretrain":
         from .pretraining import run_pretraining
 
-        def train(report, stop_event):
-            run_pretraining(report, stop_event, data_dir=args.data_dir, run_dir=args.run_dir,
-                            log=app.file_logger,
-                            sample_prompt=args.sample_prompt, verify_shards=args.verify_shards)
-
-        title, preview_mode = "Language Pretraining", "text"
+        worker = partial(run_pretraining, sample_prompt=args.sample_prompt,
+                         verify_shards=args.verify_shards, init_from=args.init_from)
+        title = "Language Pretraining"
     else:
         from .training import run_training
 
-        def train(report, stop_event):
-            run_training(report, stop_event, data_dir=args.data_dir, run_dir=args.run_dir,
-                         log=app.file_logger)
+        worker = run_training
+        title = "Tool Calling"
 
-        title, preview_mode = "Tool Calling", "text"
+    train = partial(worker, data_dir=args.data_dir, run_dir=args.run_dir)
+    log_path = args.run_dir / "training.log"
+    if args.headless:
+        from .headless import run_headless
 
-    app = TrainingApp(train, title=title, preview_mode=preview_mode,
-                      log_path=args.run_dir / "training.log")
+        return run_headless(train, log_path)
+
+    from model_training.app import TrainingApp
+
+    def dashboard_train(report, stop_event):
+        train(report, stop_event, log=app.file_logger)
+
+    app = TrainingApp(dashboard_train, title=title, preview_mode="text", log_path=log_path)
     app.run()
+    return 0
 
 
 if __name__ == "__main__":
