@@ -240,10 +240,10 @@ def _learning_rate(config: Config, update_tokens: int) -> float:
     """Compute the rate for an update ending at this many committed target tokens."""
     if update_tokens <= config.pretrain_warmup_tokens:
         return config.pretrain_peak_lr * update_tokens / config.pretrain_warmup_tokens
-    if update_tokens >= config.pretrain_token_budget:
+    if update_tokens >= config.pretrain_decay_end_tokens:
         return config.pretrain_final_lr
     fraction = (update_tokens - config.pretrain_warmup_tokens) / (
-        config.pretrain_token_budget - config.pretrain_warmup_tokens
+        config.pretrain_decay_end_tokens - config.pretrain_warmup_tokens
     )
     return config.pretrain_final_lr + (config.pretrain_peak_lr - config.pretrain_final_lr) * (
         1 + cos(pi * fraction)
@@ -336,11 +336,14 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
            optimizer: torch.optim.AdamW, scaler: torch.amp.GradScaler, sample_prompt: Callable[[], str],
            init_from: Path | None, generation_request: Event | None) -> None:
     """Keep the mix, data cursors, validation cadence, and best record stable across resumes."""
+    settings = asdict(config)
+    # Keep the on-disk name for the LR endpoint so saved runs resume unchanged.
+    settings["pretrain_token_budget"] = settings.pop("pretrain_decay_end_tokens")
     metadata = {
         "format": _CHECKPOINT_FORMAT,
         "version": 1,
         "optimizer": _OPTIMIZER,
-        "settings": asdict(config),
+        "settings": settings,
         "manifest_sha256": bundle.manifest_sha256,
         "tokenizer_sha256": bundle.tokenizer_sha256,
         "vocab_size": bundle.tokenizer.vocab_size,
@@ -396,15 +399,14 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
         log.info("Saved latest checkpoint at step %s: %s", progress.step, latest_path)
 
     tokens_per_step = config.batch_size * config.context_length
-    total_steps = (config.pretrain_token_budget + tokens_per_step - 1) // tokens_per_step
-    log.info("Pretraining budget: %s target tokens (%s full updates); warmup: %s tokens, LR %g → %g.",
-             config.pretrain_token_budget, total_steps, config.pretrain_warmup_tokens,
-             config.pretrain_peak_lr, config.pretrain_final_lr)
+    log.info("Pretraining runs until stopped; warmup: %s tokens, peak LR %g, floor %g from %s tokens.",
+             config.pretrain_warmup_tokens, config.pretrain_peak_lr, config.pretrain_final_lr,
+             config.pretrain_decay_end_tokens)
 
     def validate_if_due() -> dict[str, float]:
         """Retry a due validation on resume if Stop interrupted it before completion."""
         step = progress.step
-        if (step <= progress.validated_step or (step not in (1, total_steps) and step % config.eval_interval)
+        if (step <= progress.validated_step or (step != 1 and step % config.eval_interval)
                 or stop_event.is_set()):
             return {}
         losses = _validate(model, bundle.validation, config, device, stop_event)
@@ -431,9 +433,9 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
     model.train()
     resumed_validation = validate_if_due()
     if resumed_validation:
-        report(TrainingProgress(progress.step, total_steps, resumed_validation))
+        report(TrainingProgress(progress.step, None, resumed_validation))
     validation_metrics = {}
-    while progress.step < total_steps and not stop_event.is_set():
+    while not stop_event.is_set():
         started = perf_counter()
         source = _MIX[progress.step % len(_MIX)]
         cursor = progress.source_batches()[source] * config.batch_size
@@ -478,11 +480,10 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
         measured_seconds += perf_counter() - started
         validation_metrics = validate_if_due()
         stopping = stop_event.is_set()
-        finished = progress.step == total_steps
-        if (stopping or finished or progress.step % config.checkpoint_interval == 0) and progress.step != saved["step"]:
+        if (stopping or progress.step % config.checkpoint_interval == 0) and progress.step != saved["step"]:
             save_latest()
-        if progress.step == first_step or progress.step % config.eval_interval == 0 or stopping or finished:
-            _report_training(report, log, progress, tokens_per_step, total_steps, learning_rate,
+        if progress.step == first_step or progress.step % config.eval_interval == 0 or stopping:
+            _report_training(report, log, progress, tokens_per_step, learning_rate,
                              measured_steps, measured_seconds, validation_metrics)
             last_reported = progress.step
             measured_steps = 0
@@ -498,24 +499,24 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
                 fresh=requested,
             )
             if preview is not None and not stop_event.is_set():
-                report(TrainingProgress(progress.step, total_steps, {}, preview))
+                report(TrainingProgress(progress.step, None, {}, preview))
 
     if asdict(progress) != saved:
         save_latest()
     if progress.step > last_reported:
-        _report_training(report, log, progress, tokens_per_step, total_steps,
+        _report_training(report, log, progress, tokens_per_step,
                          _learning_rate(config, progress.step * tokens_per_step),
                          measured_steps, measured_seconds, validation_metrics)
 
 
 def _report_training(report: ProgressCallback, log: Logger, progress: _Progress, tokens_per_step: int,
-                     total_steps: int, learning_rate: float, measured_steps: int, seconds: float,
+                     learning_rate: float, measured_steps: int, seconds: float,
                      validation_metrics: dict[str, float]) -> None:
     """Report loss and recent successful-target throughput."""
     tokens_per_second = measured_steps * tokens_per_step / seconds
-    log.info("Step %s/%s loss %.4f, LR %g, %.0f tokens/s",
-             progress.step, total_steps, progress.last_loss, learning_rate, tokens_per_second)
-    report(TrainingProgress(progress.step, total_steps, {
+    log.info("Step %s loss %.4f, LR %g, %.0f tokens/s",
+             progress.step, progress.last_loss, learning_rate, tokens_per_second)
+    report(TrainingProgress(progress.step, None, {
         "loss": progress.last_loss, "tokens/s": tokens_per_second,
         "completed tokens": progress.step * tokens_per_step, "overflow skips": progress.overflow_skips,
         "learning rate": learning_rate,
@@ -555,7 +556,7 @@ def run_pretraining(report: ProgressCallback, stop_event: Event, *, data_dir: Pa
                     run_dir: Path, log: Logger, sample_prompt: Callable[[], str],
                     verify_shards: bool = False, init_from: Path | None = None,
                     generation_request: Event | None = None) -> None:
-    """Run resumable CUDA FP16/fused AdamW pretraining up to the token budget."""
+    """Run resumable CUDA FP16/fused AdamW pretraining until stopped."""
     if stop_event.is_set():
         return
     if not torch.cuda.is_available():

@@ -62,10 +62,10 @@ class Config:
     pretrain_peak_lr: float = 3e-4
     pretrain_final_lr: float = 3e-5
     pretrain_warmup_tokens: int = 4_000_000
-    pretrain_token_budget: int = 200_000_000
-    eval_interval: int = 1000
+    pretrain_decay_end_tokens: int = 200_000_000
+    eval_interval: int = 100
     eval_batches: int = 10
-    checkpoint_interval: int = 1000
+    checkpoint_interval: int = 200
 
     def __post_init__(self) -> None:
         """Require a positive number of input positions."""

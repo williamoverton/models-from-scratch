@@ -33,6 +33,11 @@ Do not add backward-compatibility code unless the user explicitly permits it.
 Prefer a clean change that updates affected callers over compatibility
 shims, legacy aliases, or parallel old and new implementations.
 
+Training must run until manually stopped by default. Never add an automatic
+stop based on steps, epochs, token count, elapsed time, or a metric threshold
+unless the user explicitly opts into it. A learning-rate schedule ending
+must not stop training.
+
 # Code structure
 
 Use modular code to make each concept easier to understand in isolation.

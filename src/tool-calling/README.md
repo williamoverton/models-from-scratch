@@ -83,11 +83,11 @@ exits with status 1; a cooperative stop exits with status 0.
 
 In Textual, press **S** to start or resume, **X** to stop, or **Q** to stop and
 quit. Pretraining uses fused AdamW and targets **90% Wikipedia / 10% Q&A**
-by training target tokens. In `Config`, `pretrain_*` settings define a linear
-warmup over 4M target tokens to `3e-4`, then cosine decay to `3e-5` at 200M
-target tokens. Only completed updates advance the schedule. The last update
-uses a full batch, so the target rounds up to the next batch boundary. The
-trainer logs the learning rate, validates, and saves at the end.
+by training target tokens. Training runs until you stop it. The learning rate
+warms up over 4M target tokens to `3e-4`, then decays to `3e-5` at
+`Config.pretrain_decay_end_tokens` (200M by default) and stays there. Only
+completed updates advance the schedule. Validation and checkpointing remain
+periodic, and stopping saves the latest completed update.
 
 `pretrain-latest.pt` stores resumable state; `pretrain-best.pt` stores weights
 at the best weighted validation loss. To resume pretraining, use the same data
