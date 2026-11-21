@@ -8,6 +8,7 @@ import signal
 from threading import Event
 
 from model_training.history import MetricsHistory
+from model_training.logs import LOG_FORMAT, SegmentLogHandler
 from model_training.progress import TextGenerationPreview, TrainingProgress, TrainingStarted
 
 
@@ -35,16 +36,15 @@ def run_headless(train, log_path: Path, *, history_path: Path) -> int:
                 logger.info("Sample step %s (%s): %r + %r", progress.preview.step,
                             example.label, example.context, example.completion)
 
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
     with ExitStack() as handlers:
         stream = handlers.enter_context(closing(logging.StreamHandler()))
-        stream.setFormatter(formatter)
+        stream.setFormatter(logging.Formatter(LOG_FORMAT))
         logger.addHandler(stream)
         handlers.callback(logger.removeHandler, stream)
         try:
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            file = handlers.enter_context(closing(logging.FileHandler(log_path, encoding="utf-8")))
-            file.setFormatter(formatter)
+            file = handlers.enter_context(closing(SegmentLogHandler(log_path)))
+            file.start_segment()
             logger.addHandler(file)
             handlers.callback(logger.removeHandler, file)
             with ExitStack() as session:

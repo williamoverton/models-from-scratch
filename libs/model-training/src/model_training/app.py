@@ -16,6 +16,7 @@ from textual.widgets import Footer, Header, Input, RichLog, Static, TabbedConten
 from textual_plotext import PlotextPlot
 
 from model_training.history import MetricsHistory
+from model_training.logs import SegmentLogHandler
 from model_training.preview import ImageGenerationPanel, TextGenerationPanel
 from model_training.progress import (
     ImageGenerationPreview,
@@ -96,15 +97,10 @@ class TrainingApp(App):
         self.history_path = history_path
         self.metrics_history: MetricsHistory | None = None
 
-        # Append timestamped messages without sending logging output into the TUI.
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        # Leave the previous segment untouched until training starts.
         self.file_logger = logging.Logger("model_training", level=logging.INFO)
-        self.log_handler = logging.FileHandler(log_path, encoding="utf-8")
-        self.log_handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-        )
-        self.file_logger.addHandler(self.log_handler)
-        self.file_logger.info("Dashboard opened: %s", title)
+        self.file_logger.addHandler(logging.NullHandler())
+        self.log_handler = SegmentLogHandler(log_path)
 
     def run(self, **kwargs) -> None:
         """Run the dashboard and restore the terminal's original input modes."""
@@ -168,6 +164,13 @@ class TrainingApp(App):
         """Start training unless a previous run is still active or stopping."""
         if self.training_running or self.generation_running:
             return
+        try:
+            self.log_handler.start_segment()
+        except OSError as error:
+            self.set_status("Could not rotate the training log — press S to retry.")
+            self.query_one("#training-log", RichLog).write(f"Log rotation failed: {error}")
+            return
+        self.file_logger.addHandler(self.log_handler)
         self.training_running = True
         self.stop_event = Event()
         self.quit_requested = False

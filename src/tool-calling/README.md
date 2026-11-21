@@ -73,8 +73,8 @@ same-size shard changes aren't detected at startup.
 Set `PretrainConfig.headless` to `True` to start pretraining immediately
 without a TTY. The `train` command still uses `--headless`.
 
-Metrics, text previews, and errors stream to stderr and append to
-`<run-dir>/training.log`. Send `SIGTERM` to the training PID printed at
+Metrics, text previews, and errors stream to stderr and are written to the
+[training log](#training-logs). Send `SIGTERM` to the training PID printed at
 startup (or press Ctrl+C in the foreground) and wait for `Training stopped.`
 The worker saves its latest completed update before exiting. A failed run
 exits with status 1; a cooperative stop exits with status 0.
@@ -119,6 +119,15 @@ without starting training or writing a checkpoint.
 
 Edits last for the dashboard session. `PretrainConfig.sample_prompt` sets the initial
 prompt and the headless prompt, without affecting checkpoint compatibility.
+
+## Training logs
+
+For both `pretrain` and `train`, each headless launch or dashboard start
+opens a new `<run-dir>/training.log` segment. This includes pressing **S**
+after **X** (Stop). Launch archives any nonempty previous log as
+`training.log.1`, shifting older archives up to `training.log.1000`. The
+`.1` archive is the newest and `.1000` is the oldest retained. Stopping or
+quitting does not rotate the log.
 
 ## Training metric history
 

@@ -57,8 +57,9 @@ not trigger an additional sample.
 The shared dashboard restores the terminal's original input settings after
 its run finishes, including when an exception unwinds the application.
 
-Dashboard messages and full training-failure tracebacks are appended to
-`logs/training.log`, relative to the working directory. Logs are git-ignored.
+Training messages and full training-failure tracebacks go to the git-ignored
+`logs/training.log`, relative to the working directory. Start archives the
+previous log as `training.log.1` and keeps up to 1,000 numbered archives.
 
 Model and training defaults live in
 `src/doggie_diffusion/settings.py`. Preview and checkpoint intervals are

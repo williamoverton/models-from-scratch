@@ -16,3 +16,5 @@ Read [README.md](README.md) for the callback and dashboard mode contract.
 - Keep metric history run-local and independent of model checkpoint formats.
   Only a worker's `TrainingStarted` event establishes the restored step; do
   not infer it from logs or the first metric report.
+- Rotate file logs through `SegmentLogHandler` at training start, not at
+  stop, dashboard mount, or a size threshold. Use one writer per path.

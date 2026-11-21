@@ -26,6 +26,20 @@ the current prompt. While training, the worker consumes `generation_request`
 and reads `app.generation_prompt` at a safe update boundary. While idle, the
 dashboard calls `generate_text(prompt)` on its generation worker.
 
+## Training logs
+
+Each Start rotates the existing nonempty log before writing the new training
+segment. Stop leaves the current log in place. This also applies when starting
+headless training or reopening the dashboard and pressing Start.
+`training.log.1` is the most recent archive, and `training.log.1000` is the oldest
+retained archive. Opening and closing the dashboard without starting does not
+touch the existing log.
+
+For another launcher, attach `model_training.logs.SegmentLogHandler(path)` to
+a standard Python logger. Call `handler.start_segment()` before writing the
+first record of each segment, then detach and close the handler when done.
+Use one writer per log path.
+
 ## Publishing progress
 
 Report `TrainingProgress` snapshots from the worker. `step` counts completed
