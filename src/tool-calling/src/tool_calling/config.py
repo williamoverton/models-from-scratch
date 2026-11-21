@@ -25,7 +25,7 @@ class Config:
     """Shared settings for pretraining and tool training; context comes from the manifest."""
 
     context_length: int
-    batch_size: int = 32
+    batch_size: int = 8
     embedding_dim: int = 768
     feed_forward_dim: int = 1536
     feed_forward_type: Literal["swiglu", "relu"] = "swiglu"
@@ -46,10 +46,10 @@ class Config:
     num_heads: int = 12
     attention_head_gating: bool = True
     learning_rate: float = 0.001
-    eval_interval: int = 100
     pretrain_peak_lr: float = 3e-4
     pretrain_final_lr: float = 3e-5
     pretrain_warmup_tokens: int = 4_000_000
     pretrain_token_budget: int = 200_000_000
+    eval_interval: int = 1000
     eval_batches: int = 10
-    checkpoint_interval: int = 500
+    checkpoint_interval: int = 1000
