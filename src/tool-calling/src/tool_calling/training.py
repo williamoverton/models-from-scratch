@@ -57,7 +57,15 @@ def run_training(report: ProgressCallback, stop_event: Event, *, data_dir: Path,
         bundle = load_bundle(data_dir, stop_event)
         if bundle is None:
             return
-        config = Config(context_length=bundle.context_length)
+        config = Config()
+        # The final token in each interaction is a target, not a model input.
+        longest_input = max(len(record.tokens) - 1
+                            for split in (bundle.train, bundle.validation) for record in split)
+        if longest_input > config.context_length:
+            raise ValueError(
+                f"Config.context_length is {config.context_length}, but the prepared tool data needs "
+                f"{longest_input} input positions. Increase the model context or use a shorter bundle."
+            )
         path = run_dir / CHECKPOINT_NAME
         state = read_checkpoint(path, config, bundle.manifest_digest)
         if stop_event.is_set():

@@ -36,29 +36,40 @@ _TOKEN_DTYPE = np.dtype("<u2")
 
 
 class _Split:
-    """Index an ordered set of CPU memory maps as one logical row array."""
+    """Index model-sized windows within an ordered set of packed shards."""
 
-    def __init__(self, shards: list[np.memmap]):
+    def __init__(self, shards: list[np.memmap], context_length: int):
+        """Use only complete, non-overlapping windows from each stored row."""
         self.shards = shards
         self.ends = np.cumsum([len(shard) for shard in shards], dtype=np.int64)
+        self.context_length = context_length
+        stored_context = shards[0].shape[1] - 1
+        self.windows_per_row, self.discarded_targets = divmod(stored_context, context_length)
+        self.columns = np.arange(context_length + 1, dtype=np.int64)
 
     def __len__(self) -> int:
-        return int(self.ends[-1])
+        return int(self.ends[-1]) * self.windows_per_row
 
     def batch(self, indices: np.ndarray, device: torch.device) -> torch.Tensor:
-        """Gather only the selected rows, preserving their shuffled order."""
-        rows = np.empty((len(indices), self.shards[0].shape[1]), dtype=np.int64)
-        shard_ids = np.searchsorted(self.ends, indices, side="right")
+        """Gather only the selected windows, preserving their shuffled order."""
+        rows = np.empty((len(indices), self.context_length + 1), dtype=np.int64)
+        row_ids, slots = np.divmod(indices, self.windows_per_row) if self.windows_per_row > 1 else (indices, None)
+        shard_ids = np.searchsorted(self.ends, row_ids, side="right")
         for shard_id in np.unique(shard_ids):
             positions = np.flatnonzero(shard_ids == shard_id)
             start = self.ends[shard_id - 1] if shard_id else 0
-            rows[positions] = self.shards[shard_id][indices[positions] - start]
+            local_rows = row_ids[positions] - start
+            shard = self.shards[shard_id]
+            if slots is None:
+                rows[positions] = shard[local_rows, :self.context_length + 1]
+            else:
+                starts = slots[positions] * self.context_length
+                rows[positions] = shard[local_rows[:, None], starts[:, None] + self.columns]
         return torch.from_numpy(rows).to(device)
 
 
 @dataclass(frozen=True)
 class _Bundle:
-    context_length: int
     tokenizer: Tokenizer
     manifest_sha256: str
     tokenizer_sha256: str
@@ -88,8 +99,8 @@ def _map_shard(path: Path, rows: int, width: int, digest: str, vocab_size: int,
         return np.memmap(stream, dtype=_TOKEN_DTYPE, mode="r", shape=(rows, width))
 
 
-def _load_bundle(data_dir: Path, stop_event: Event, *, verify_shards: bool) -> _Bundle | None:
-    """Validate the manifest and tokenizer, then map the four prepared splits."""
+def _load_bundle(data_dir: Path, stop_event: Event, *, context_length: int, verify_shards: bool) -> _Bundle | None:
+    """Validate the stored layout and expose windows of the configured model length."""
     data_dir = data_dir.resolve()
     manifest_path = data_dir / "manifest.json"
     try:
@@ -98,9 +109,14 @@ def _load_bundle(data_dir: Path, stop_event: Event, *, verify_shards: bool) -> _
         if (not isinstance(manifest, dict) or manifest.get("format") != "tool-calling-pretrain-data"
                 or type(manifest.get("version")) is not int or manifest["version"] != 1):
             raise ValueError("Expected tool-calling pretraining data format version 1.")
-        context = manifest["context_length"]
-        if type(context) is not int or context < 1:
-            raise ValueError("Expected a positive context length.")
+        stored_context = manifest["context_length"]
+        if type(stored_context) is not int or stored_context < 1:
+            raise ValueError("Expected a positive stored context length.")
+        if context_length > stored_context:
+            raise ValueError(
+                f"Config.context_length is {context_length}, but the bundle stores {stored_context}-token windows. "
+                "Select a bundle prepared with windows at least as long as the model context."
+            )
         tokenizer_path = data_dir / "tokenizer.json"
         tokenizer_hash = manifest["tokenizer_sha256"]
         with tokenizer_path.open("rb") as stream:
@@ -135,14 +151,14 @@ def _load_bundle(data_dir: Path, stop_event: Event, *, verify_shards: bool) -> _
                         raise ValueError(f"Invalid or repeated shard path: {name}.")
                     if type(rows) is not int or rows < 1 or not isinstance(digest, str):
                         raise ValueError(f"Invalid shard metadata for {name}.")
-                    shard = _map_shard(path, rows, context + 1, digest, vocab_size, stop_event,
+                    shard = _map_shard(path, rows, stored_context + 1, digest, vocab_size, stop_event,
                                        verify_shards=verify_shards)
                     if shard is None:
                         return None
                     seen.add(path)
                     shards.append(shard)
-                by_source[source] = _Split(shards)
-        return _Bundle(context, tokenizer, sha256(manifest_bytes).hexdigest(), tokenizer_hash,
+                by_source[source] = _Split(shards, context_length)
+        return _Bundle(tokenizer, sha256(manifest_bytes).hexdigest(), tokenizer_hash,
                        splits["train"], splits["validation"])
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise ValueError(f"Invalid pretraining bundle at {manifest_path}: {error}") from error
@@ -252,7 +268,11 @@ def _restore(path: Path, metadata: dict, model: LanguageModel, optimizer: torch.
         ):
             raise ValueError("Checkpoint format or prepared bundle differs.")
         if previous.get("optimizer") != _OPTIMIZER:
-            raise ValueError("Checkpoint does not use fused AdamW; set PRETRAIN_INIT_FROM to load weights only.")
+            raise ValueError("Checkpoint does not use fused AdamW; set PretrainConfig.init_from to load weights only.")
+        if previous["settings"]["context_length"] != metadata["settings"]["context_length"]:
+            raise ValueError("Cannot resume after changing Config.context_length.")
+        if previous.get("discarded_targets_per_row") != metadata.get("discarded_targets_per_row"):
+            raise ValueError("Cannot resume after changing the pretraining window layout.")
         # The sampler derives its row positions from the saved step and these settings.
         for name in ("batch_size", "seed"):
             if previous["settings"][name] != metadata["settings"][name]:
@@ -275,7 +295,7 @@ def _restore(path: Path, metadata: dict, model: LanguageModel, optimizer: torch.
         torch.cuda.set_rng_state(saved["cuda_rng"], device)
         return progress, previous
     except Exception as error:
-        raise ValueError(f"Cannot resume {path}: {error} For a fresh start, change PRETRAIN_RUN_DIR.") from error
+        raise ValueError(f"Cannot resume {path}: {error} For a fresh start, change PretrainConfig.run_dir.") from error
 
 
 def _loss(model: LanguageModel, tokens: torch.Tensor, reduction: str) -> torch.Tensor:
@@ -325,10 +345,14 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
         "tokenizer_sha256": bundle.tokenizer_sha256,
         "vocab_size": bundle.tokenizer.vocab_size,
     }
+    discarded_targets = bundle.train["wikipedia"].discarded_targets
+    if discarded_targets:
+        # Bind truncated layouts without changing resume identity for exact splits.
+        metadata["discarded_targets_per_row"] = discarded_targets
     latest_path = run_dir / _LATEST
     best_path = run_dir / _BEST
     if init_from is not None and any(path.exists() or path.is_symlink() for path in (latest_path, best_path)):
-        raise ValueError("PRETRAIN_INIT_FROM requires a run directory without checkpoints; set it to None to resume.")
+        raise ValueError("PretrainConfig.init_from requires a run directory without checkpoints; set it to None to resume.")
     restored = _restore(latest_path, metadata, model, optimizer, scaler, device)
 
     def save_best(weights_metadata: dict) -> None:
@@ -342,7 +366,7 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
 
     if restored is None:
         if best_path.exists():
-            raise ValueError(f"Best weights exist but {latest_path} is missing; change PRETRAIN_RUN_DIR.")
+            raise ValueError(f"Best weights exist but {latest_path} is missing; change PretrainConfig.run_dir.")
         progress = _Progress()
         if init_from is not None:
             _initialize_weights(init_from, metadata, model, log)
@@ -507,14 +531,16 @@ def generate_pretraining_example(prompt: str, *, data_dir: Path, run_dir: Path) 
         raise RuntimeError("Tool-calling generation requires CUDA.")
     device = torch.device("cuda", torch.cuda.current_device())
     stop = Event()
-    bundle = _load_bundle(data_dir, stop, verify_shards=False)
+    config = Config()
+    bundle = _load_bundle(data_dir, stop, context_length=config.context_length, verify_shards=False)
     assert bundle is not None  # This display-only operation has no stop request.
-    config = Config(context_length=bundle.context_length)
     saved = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
     metadata = saved["metadata"]
     if (saved["kind"] != "latest" or metadata["format"] != _CHECKPOINT_FORMAT
             or metadata["version"] != 1 or metadata["manifest_sha256"] != bundle.manifest_sha256):
         raise ValueError(f"Checkpoint format or prepared bundle differs at {path}.")
+    if metadata["settings"]["context_length"] != config.context_length:
+        raise ValueError(f"Checkpoint context differs from Config.context_length at {path}.")
     model = LanguageModel(bundle.tokenizer.vocab_size, config).to(device)
     model.load_state_dict(saved["model"])
     step = saved["progress"]["step"]
@@ -537,10 +563,10 @@ def run_pretraining(report: ProgressCallback, stop_event: Event, *, data_dir: Pa
     with lock_run(run_dir):
         log.info("Opening pretraining data: %s (full shard verification %s)",
                  data_dir, "on" if verify_shards else "off")
-        bundle = _load_bundle(data_dir, stop_event, verify_shards=verify_shards)
+        config = Config()
+        bundle = _load_bundle(data_dir, stop_event, context_length=config.context_length, verify_shards=verify_shards)
         if bundle is None or stop_event.is_set():
             return
-        config = Config(context_length=bundle.context_length)
         torch.manual_seed(config.seed)
         model = LanguageModel(bundle.tokenizer.vocab_size, config).to(device)
         optimizer = torch.optim.AdamW(model.parameters(), lr=config.pretrain_peak_lr, fused=True)

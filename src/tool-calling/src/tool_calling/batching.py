@@ -32,7 +32,6 @@ class Bundle:
     """Validated artifacts, with a manifest digest binding their identities."""
 
     tokenizer: Tokenizer
-    context_length: int
     manifest_digest: str
     train: list[Record]
     validation: list[Record]
@@ -158,7 +157,7 @@ def load_bundle(directory: Path, stop_event: Event) -> Bundle | None:
                                  tokenizer, vocab_size, context, stop_event)
         if validation is None or stop_event.is_set():
             return None
-        return Bundle(tokenizer, context, sha256(manifest_bytes).hexdigest(), train, validation)
+        return Bundle(tokenizer, sha256(manifest_bytes).hexdigest(), train, validation)
     except (KeyError, OSError, TypeError, ValueError) as error:
         raise ValueError(
             f"Cannot use prepared bundle {directory}: {error} "

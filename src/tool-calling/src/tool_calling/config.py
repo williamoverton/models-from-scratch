@@ -5,13 +5,16 @@ from pathlib import Path
 from typing import Literal
 
 
-# Launch settings for `tool-calling pretrain` from the workspace root.
-PRETRAIN_DATA_DIR = Path("/mnt/StorageBox/datasets/pretrain-wiki-qa-8k-ctx1024")
-PRETRAIN_RUN_DIR = Path("trained-models/tool-calling/runs/pretrain-wiki-qa-8k-1024")
-PRETRAIN_INIT_FROM: Path | None = None
-PRETRAIN_SAMPLE_PROMPT = "Training an LLM is"
-PRETRAIN_VERIFY_SHARDS = False
-PRETRAIN_HEADLESS = False
+@dataclass(frozen=True)
+class PretrainConfig:
+    """Launch settings for pretraining from the workspace root."""
+
+    data_dir: Path = Path("/mnt/StorageBox/datasets/pretrain-wiki-qa-8k-ctx1024")
+    run_dir: Path = Path("trained-models/tool-calling/runs/pretrain-wiki-qa-8k-2loops")
+    init_from: Path | None = None
+    sample_prompt: str = "Training an LLM is"
+    verify_shards: bool = False
+    headless: bool = False
 
 
 type BlockSpec = Literal["convolution", "global", "l2-norm"] | tuple[Literal["local"], int]
@@ -32,12 +35,12 @@ class Loop:
 
 @dataclass(frozen=True)
 class Config:
-    """Shared settings for pretraining and tool training; context comes from the manifest."""
+    """Shared model and training settings for pretraining and tool training."""
 
-    context_length: int
-    batch_size: int = 8
-    embedding_dim: int = 768
-    feed_forward_dim: int = 1536
+    context_length: int = 800
+    batch_size: int = 6
+    embedding_dim: int = 512
+    feed_forward_dim: int = 512*2
     feed_forward_type: Literal["swiglu", "relu"] = "swiglu"
     swiglu_product_limit: float | None = 2048.0
     seed: int = 42
@@ -53,7 +56,7 @@ class Config:
         "convolution", "global",
     )
     conv_kernel_size: int = 7
-    num_heads: int = 12
+    num_heads: int = 8
     attention_head_gating: bool = True
     learning_rate: float = 0.001
     pretrain_peak_lr: float = 3e-4
@@ -63,3 +66,8 @@ class Config:
     eval_interval: int = 1000
     eval_batches: int = 10
     checkpoint_interval: int = 1000
+
+    def __post_init__(self) -> None:
+        """Require a positive number of input positions."""
+        if type(self.context_length) is not int or self.context_length < 1:
+            raise ValueError("Config.context_length must be a positive integer.")

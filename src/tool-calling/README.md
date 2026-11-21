@@ -42,29 +42,35 @@ uv run --with libzim==4.1.0 tool-calling prepare-pretrain \
 uv run --locked tool-calling pretrain
 ```
 
-Run from the workspace root. The `PRETRAIN_*` settings at the top of
-[`config.py`](src/tool_calling/config.py) select the prepared bundle, run
+Run from the workspace root. `PretrainConfig` in
+[`config.py`](src/tool_calling/config.py) selects the prepared bundle, run
 directory, and launch behavior. `pretrain` takes no training arguments.
 
-The default context is 1,024 tokens. Preparation splits documents before
-packing and writes disk-backed windows of 1,025 IDs for shifted inputs and
-targets. Existing 350-token bundles keep their original context; prepare a
-new bundle to train at 1,024. Omit `--windows-per-source` to prepare all training
-windows, or set it to cap each source's preparation before an overnight run.
-Validation uses up to 1,024 windows per source. Each preparation uses a new directory; a
+`Config.context_length` in [`config.py`](src/tool_calling/config.py) controls
+the model context. The default bundle stores 1,024-token windows (1,025 IDs
+for shifted inputs and targets). Set the model context lower to reuse the same
+bundle as complete, non-overlapping windows. A 1,024-token row supplies one
+window at 800 (the last 224 targets are unused), two at 512, or four at 256.
+To train with a context longer than the stored windows, select or prepare a
+wider bundle. Runs started with the old overlapping layout cannot resume
+with truncation; use a new run directory.
+
+Preparation splits documents before packing. Omit `--windows-per-source`
+to prepare all training windows, or set it to cap each source. Preparation
+stores up to 1,024 validation windows per source. Each preparation uses a new directory; a
 running job never picks up additional shards.
 Preparation parses and tokenizes in worker processes, using all available
 logical CPUs by default. Use `--workers N` to leave CPU capacity for other jobs.
 It prints per-source window counts while it runs.
 
 Startup checks the manifest, tokenizer hash, and shard paths and sizes. It
-does not scan shard contents by default. Set `PRETRAIN_VERIFY_SHARDS = True`
-to read every shard and check its SHA-256 and token ID range. Otherwise,
+does not scan shard contents by default. Set `PretrainConfig.verify_shards`
+to `True` to read every shard and check its SHA-256 and token ID range. Otherwise,
 same-size shard changes aren't detected at startup.
 
 ### Run without the dashboard
 
-Set `PRETRAIN_HEADLESS = True` in `config.py` to start pretraining immediately
+Set `PretrainConfig.headless` to `True` to start pretraining immediately
 without a TTY. The `train` command still uses `--headless`.
 
 Metrics, text previews, and errors stream to stderr and append to
@@ -85,20 +91,20 @@ trainer logs the learning rate, validates, and saves at the end.
 
 `pretrain-latest.pt` stores resumable state; `pretrain-best.pt` stores weights
 at the best weighted validation loss. To resume pretraining, use the same data
-and run directories, batch size, seed, and learning-rate schedule. The block
+and run directories, model context, batch size, seed, and learning-rate schedule. The block
 schedule may change if the parameter names and shapes still match. Resume keeps
 AdamW moments, scaler, data cursor, and schedule position. Checkpoints from
-the old Adam optimizer can only initialize weights via `PRETRAIN_INIT_FROM`, if
+the old Adam optimizer can only initialize weights via `PretrainConfig.init_from`, if
 the model and tokenizer still match. Historical best loss may not be comparable
 after a block schedule or validation-sample change.
 
-To reuse weights without continuing old run state, set `PRETRAIN_INIT_FROM`
-to the path of a latest or best pretraining checkpoint and set
-`PRETRAIN_RUN_DIR` to a separate run directory.
+To reuse weights without continuing old run state, set `PretrainConfig.init_from`
+to the path of a latest or best pretraining checkpoint and set `run_dir`
+to a separate run directory.
 
 This requires the same tokenizer and matching parameter names and shapes.
 Step, data cursor, validation history, optimizer state, and scaler start fresh.
-Once the new run has a checkpoint, set `PRETRAIN_INIT_FROM = None` to resume it.
+Once the new run has a checkpoint, set `PretrainConfig.init_from` back to `None` to resume it.
 
 On a non-finite training loss, pretraining replays the failed batch before
 backpropagation and logs the first non-finite operation it can observe,
@@ -111,7 +117,7 @@ Press **G** to draw a fresh sample without changing the prompt. While training,
 requests run at a completed update; while idle, they use the latest checkpoint
 without starting training or writing a checkpoint.
 
-Edits last for the dashboard session. `PRETRAIN_SAMPLE_PROMPT` sets the initial
+Edits last for the dashboard session. `PretrainConfig.sample_prompt` sets the initial
 prompt and the headless prompt, without affecting checkpoint compatibility.
 
 ## Prepare the data
@@ -136,10 +142,12 @@ Older prepared JSONL bundles are not supported. Prepare a new bundle in a
 new directory, and start training in a new run directory: checkpoints are
 bound to the original bundle's manifest.
 
-The context limit defaults to 1,024 tokens. If preparation reports overlength
-rows, retry with `--context-length N` at least as large as the reported
-maximum, using a new output directory. Nothing is silently truncated. The
-trainer uses the limit in the manifest; a larger limit can use more GPU memory.
+The preparation limit defaults to 1,024 stored tokens per interaction. If
+preparation reports overlength rows, retry with `--context-length N` at least
+as large as the reported maximum, using a new output directory.
+`Config.context_length` controls the model separately. Training rejects a bundle
+if an interaction's shifted inputs exceed that setting; it never truncates
+the prompt or the targets.
 Use `--seed N` to create a different corpus. The example paths keep generated
 artifacts out of version control.
 

@@ -83,21 +83,22 @@ def _run_training(args: argparse.Namespace) -> int:
     generate_text = None
     generation_prompt = ""
     if args.command == "pretrain":
-        from . import config
+        from .config import PretrainConfig
         from .pretraining import generate_pretraining_example, run_pretraining
 
-        if not config.PRETRAIN_SAMPLE_PROMPT.strip():
-            raise SystemExit("PRETRAIN_SAMPLE_PROMPT in config.py must contain non-whitespace text.")
-        run_dir = config.PRETRAIN_RUN_DIR
-        headless = config.PRETRAIN_HEADLESS
-        generation_prompt = config.PRETRAIN_SAMPLE_PROMPT
-        train = partial(run_pretraining, data_dir=config.PRETRAIN_DATA_DIR, run_dir=run_dir,
+        launch = PretrainConfig()
+        if not launch.sample_prompt.strip():
+            raise SystemExit("PretrainConfig.sample_prompt must contain non-whitespace text.")
+        run_dir = launch.run_dir
+        headless = launch.headless
+        generation_prompt = launch.sample_prompt
+        train = partial(run_pretraining, data_dir=launch.data_dir, run_dir=run_dir,
                         sample_prompt=lambda: generation_prompt,
-                        verify_shards=config.PRETRAIN_VERIFY_SHARDS, init_from=config.PRETRAIN_INIT_FROM)
+                        verify_shards=launch.verify_shards, init_from=launch.init_from)
         title = "Language Pretraining"
         if not headless:
             generation_request = Event()
-            generate_text = partial(generate_pretraining_example, data_dir=config.PRETRAIN_DATA_DIR, run_dir=run_dir)
+            generate_text = partial(generate_pretraining_example, data_dir=launch.data_dir, run_dir=run_dir)
     else:
         from .training import run_training
 
