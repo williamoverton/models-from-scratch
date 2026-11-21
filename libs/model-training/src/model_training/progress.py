@@ -43,14 +43,14 @@ class TrainingProgress:
     """A model-independent snapshot of training progress.
 
     Step counts completed parameter updates, starting at one. Metrics may
-    describe the calculation used for that update. When present, "loss" is
-    used for the dashboard's loss graph.
+    describe the calculation used for that update. When present, "loss" and
+    "validation loss" feed the dashboard's training and validation charts.
     total_steps is None when training runs until stopped.
     Each snapshot owns a fresh metrics dictionary that producers and consumers
     must not modify after publication.
     An optional preview carries display-ready images or text, not model tensors.
     A preview-only report uses an empty metrics dictionary and leaves the
-    metric display and loss history unchanged.
+    loss charts and training metrics unchanged.
     """
 
     step: int

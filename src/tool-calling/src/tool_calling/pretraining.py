@@ -1,5 +1,6 @@
 """Train the tool-calling architecture on packed next-token windows."""
 
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from hashlib import file_digest, sha256
 import json
@@ -13,7 +14,7 @@ from threading import Event
 from time import perf_counter
 
 from model_tokenizer import Tokenizer
-from model_training.progress import ProgressCallback, TrainingProgress
+from model_training.progress import ProgressCallback, TextGenerationPreview, TrainingProgress
 import numpy as np
 import torch
 from torch.nn import functional as F
@@ -251,7 +252,7 @@ def _restore(path: Path, metadata: dict, model: LanguageModel, optimizer: torch.
         ):
             raise ValueError("Checkpoint format or prepared bundle differs.")
         if previous.get("optimizer") != _OPTIMIZER:
-            raise ValueError("Checkpoint does not use fused AdamW; use --init-from to load weights only.")
+            raise ValueError("Checkpoint does not use fused AdamW; set PRETRAIN_INIT_FROM to load weights only.")
         # The sampler derives its row positions from the saved step and these settings.
         for name in ("batch_size", "seed"):
             if previous["settings"][name] != metadata["settings"][name]:
@@ -274,7 +275,7 @@ def _restore(path: Path, metadata: dict, model: LanguageModel, optimizer: torch.
         torch.cuda.set_rng_state(saved["cuda_rng"], device)
         return progress, previous
     except Exception as error:
-        raise ValueError(f"Cannot resume {path}: {error} For a fresh start, use another --run-dir.") from error
+        raise ValueError(f"Cannot resume {path}: {error} For a fresh start, change PRETRAIN_RUN_DIR.") from error
 
 
 def _loss(model: LanguageModel, tokens: torch.Tensor, reduction: str) -> torch.Tensor:
@@ -312,8 +313,8 @@ def _validate(model: LanguageModel, validation: dict[str, _Split], config: Confi
 
 def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir: Path,
            bundle: _Bundle, config: Config, device: torch.device, model: LanguageModel,
-           optimizer: torch.optim.AdamW, scaler: torch.amp.GradScaler, sample_prompt: str,
-           init_from: Path | None) -> None:
+           optimizer: torch.optim.AdamW, scaler: torch.amp.GradScaler, sample_prompt: Callable[[], str],
+           init_from: Path | None, generation_request: Event | None) -> None:
     """Keep the mix, data cursors, validation cadence, and best record stable across resumes."""
     metadata = {
         "format": _CHECKPOINT_FORMAT,
@@ -327,7 +328,7 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
     latest_path = run_dir / _LATEST
     best_path = run_dir / _BEST
     if init_from is not None and any(path.exists() or path.is_symlink() for path in (latest_path, best_path)):
-        raise ValueError("--init-from requires a run directory without checkpoints; omit it to resume.")
+        raise ValueError("PRETRAIN_INIT_FROM requires a run directory without checkpoints; set it to None to resume.")
     restored = _restore(latest_path, metadata, model, optimizer, scaler, device)
 
     def save_best(weights_metadata: dict) -> None:
@@ -341,7 +342,7 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
 
     if restored is None:
         if best_path.exists():
-            raise ValueError(f"Best weights exist but {latest_path} is missing; use another --run-dir.")
+            raise ValueError(f"Best weights exist but {latest_path} is missing; change PRETRAIN_RUN_DIR.")
         progress = _Progress()
         if init_from is not None:
             _initialize_weights(init_from, metadata, model, log)
@@ -461,9 +462,15 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
             last_reported = progress.step
             measured_steps = 0
             measured_seconds = 0.0
-        if not stopping and (progress.step == first_step or progress.step % SAMPLE_INTERVAL == 0):
+        if stopping:
+            continue
+        requested = generation_request is not None and generation_request.is_set()
+        if requested:
+            generation_request.clear()
+        if requested or progress.step == first_step or progress.step % SAMPLE_INTERVAL == 0:
             preview = create_pretraining_preview(
-                model, bundle.tokenizer, sample_prompt, config, device, progress.step, stop_event,
+                model, bundle.tokenizer, sample_prompt(), config, device, progress.step, stop_event,
+                fresh=requested,
             )
             if preview is not None and not stop_event.is_set():
                 report(TrainingProgress(progress.step, total_steps, {}, preview))
@@ -491,9 +498,36 @@ def _report_training(report: ProgressCallback, log: Logger, progress: _Progress,
     }))
 
 
+def generate_pretraining_example(prompt: str, *, data_dir: Path, run_dir: Path) -> TextGenerationPreview:
+    """Sample from the latest committed pretraining weights without changing the run."""
+    path = run_dir / _LATEST
+    if not path.is_file():
+        raise ValueError(f"No pretraining checkpoint at {path}. Start training first.")
+    if not torch.cuda.is_available():
+        raise RuntimeError("Tool-calling generation requires CUDA.")
+    device = torch.device("cuda", torch.cuda.current_device())
+    stop = Event()
+    bundle = _load_bundle(data_dir, stop, verify_shards=False)
+    assert bundle is not None  # This display-only operation has no stop request.
+    config = Config(context_length=bundle.context_length)
+    saved = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
+    metadata = saved["metadata"]
+    if (saved["kind"] != "latest" or metadata["format"] != _CHECKPOINT_FORMAT
+            or metadata["version"] != 1 or metadata["manifest_sha256"] != bundle.manifest_sha256):
+        raise ValueError(f"Checkpoint format or prepared bundle differs at {path}.")
+    model = LanguageModel(bundle.tokenizer.vocab_size, config).to(device)
+    model.load_state_dict(saved["model"])
+    step = saved["progress"]["step"]
+    del saved
+    preview = create_pretraining_preview(model, bundle.tokenizer, prompt, config, device, step, stop, fresh=True)
+    assert preview is not None
+    return preview
+
+
 def run_pretraining(report: ProgressCallback, stop_event: Event, *, data_dir: Path,
-                    run_dir: Path, log: Logger, sample_prompt: str,
-                    verify_shards: bool = False, init_from: Path | None = None) -> None:
+                    run_dir: Path, log: Logger, sample_prompt: Callable[[], str],
+                    verify_shards: bool = False, init_from: Path | None = None,
+                    generation_request: Event | None = None) -> None:
     """Run resumable CUDA FP16/fused AdamW pretraining up to the token budget."""
     if stop_event.is_set():
         return
@@ -516,4 +550,4 @@ def run_pretraining(report: ProgressCallback, stop_event: Event, *, data_dir: Pa
                  config.batch_size)
         _train(report, stop_event, log=log, run_dir=run_dir, bundle=bundle, config=config,
                device=device, model=model, optimizer=optimizer, scaler=scaler, sample_prompt=sample_prompt,
-               init_from=init_from)
+               init_from=init_from, generation_request=generation_request)

@@ -1,7 +1,17 @@
 """Settings for the hybrid convolution/attention tool-calling model."""
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
+
+
+# Launch settings for `tool-calling pretrain` from the workspace root.
+PRETRAIN_DATA_DIR = Path("/mnt/StorageBox/datasets/pretrain-wiki-qa-8k-ctx1024")
+PRETRAIN_RUN_DIR = Path("trained-models/tool-calling/runs/pretrain-wiki-qa-8k-1024")
+PRETRAIN_INIT_FROM: Path | None = None
+PRETRAIN_SAMPLE_PROMPT = "Training an LLM is"
+PRETRAIN_VERIFY_SHARDS = False
+PRETRAIN_HEADLESS = False
 
 
 type BlockSpec = Literal["convolution", "global", "l2-norm"] | tuple[Literal["local"], int]

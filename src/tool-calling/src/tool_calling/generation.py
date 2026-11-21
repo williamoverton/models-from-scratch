@@ -29,15 +29,19 @@ _SAMPLE = {
 
 
 def _sample_tokens(model, prefix: list[int], terminators: set[int], config: Config,
-                   device: torch.device, stop_event: Event) -> list[int] | None:
-    """Generate only within the remaining context and use a private, fixed RNG."""
+                   device: torch.device, stop_event: Event, *, fresh: bool = False) -> list[int] | None:
+    """Generate within the remaining context using an independent RNG."""
     size = len(prefix)
     budget = min(_SAMPLE_TOKENS, config.context_length - size)
     if budget <= 0:
         return []
     ids = torch.empty((1, size + budget), dtype=torch.long, device=device)
     ids[0, :size] = torch.as_tensor(prefix, dtype=torch.long, device=device)
-    generator = torch.Generator(device=device).manual_seed(_SAMPLE_SEED)
+    generator = torch.Generator(device=device)
+    if fresh:
+        generator.seed()
+    else:
+        generator.manual_seed(_SAMPLE_SEED)
     generated = []
     for position in range(size, size + budget):
         if stop_event.is_set():
@@ -93,7 +97,7 @@ def create_preview(model, tokenizer: Tokenizer, config: Config, device: torch.de
 @torch.no_grad()
 def create_pretraining_preview(model, tokenizer: Tokenizer, prompt: str, config: Config,
                                device: torch.device, step: int,
-                               stop_event: Event) -> TextGenerationPreview | None:
+                               stop_event: Event, *, fresh: bool = False) -> TextGenerationPreview | None:
     """Continue an ordinary-text prompt until the document ends or the budget is used."""
     if stop_event.is_set():
         return None
@@ -102,7 +106,7 @@ def create_pretraining_preview(model, tokenizer: Tokenizer, prompt: str, config:
     was_training = model.training
     model.eval()
     try:
-        generated = _sample_tokens(model, prefix, terminators, config, device, stop_event)
+        generated = _sample_tokens(model, prefix, terminators, config, device, stop_event, fresh=fresh)
     finally:
         model.train(was_training)
     if generated is None or stop_event.is_set():

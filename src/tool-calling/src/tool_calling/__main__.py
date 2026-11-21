@@ -4,6 +4,7 @@ import argparse
 import os
 from functools import partial
 from pathlib import Path
+from threading import Event
 
 from .data_generation import DEFAULT_SEED
 from .prepare_data import DEFAULT_CONTEXT_LENGTH, prepare_data
@@ -43,21 +44,10 @@ def main() -> None:
     train.add_argument("--data-dir", type=Path, required=True, help="Directory from prepare-data.")
     train.add_argument("--run-dir", type=Path, required=True, help="Directory for checkpoint.pt and training.log.")
 
-    pretrain = commands.add_parser("pretrain", help="Open the next-token pretraining dashboard.")
-    pretrain.add_argument("--data-dir", type=Path, required=True, help="Directory from prepare-pretrain.")
-    pretrain.add_argument("--run-dir", type=Path, required=True, help="Directory for pretraining checkpoints and log.")
-    pretrain.add_argument("--init-from", type=Path,
-                          help="Load model weights from a pretraining checkpoint into a fresh run.")
-    pretrain.add_argument("--sample-prompt", default="Training an LLM is",
-                          help="Text to continue in the preview (default: %(default)s).")
-    pretrain.add_argument("--verify-shards", action="store_true",
-                          help="Scan every shard for SHA-256 and token ID validity before training.")
-    for command in (train, pretrain):
-        command.add_argument("--headless", action="store_true",
-                             help="Start immediately without the dashboard; SIGINT or SIGTERM saves and stops.")
+    train.add_argument("--headless", action="store_true",
+                       help="Start immediately without the dashboard; SIGINT or SIGTERM saves and stops.")
+    commands.add_parser("pretrain", help="Run text pretraining using settings in config.py.")
     args = parser.parse_args()
-    if args.command == "pretrain" and not args.sample_prompt.strip():
-        pretrain.error("--sample-prompt must contain non-whitespace text.")
 
     if args.command == "prepare-data":
         try:
@@ -89,21 +79,35 @@ def main() -> None:
 
 def _run_training(args: argparse.Namespace) -> int:
     """Send the same training worker to the dashboard or the headless runner."""
+    generation_request = None
+    generate_text = None
+    generation_prompt = ""
     if args.command == "pretrain":
-        from .pretraining import run_pretraining
+        from . import config
+        from .pretraining import generate_pretraining_example, run_pretraining
 
-        worker = partial(run_pretraining, sample_prompt=args.sample_prompt,
-                         verify_shards=args.verify_shards, init_from=args.init_from)
+        if not config.PRETRAIN_SAMPLE_PROMPT.strip():
+            raise SystemExit("PRETRAIN_SAMPLE_PROMPT in config.py must contain non-whitespace text.")
+        run_dir = config.PRETRAIN_RUN_DIR
+        headless = config.PRETRAIN_HEADLESS
+        generation_prompt = config.PRETRAIN_SAMPLE_PROMPT
+        train = partial(run_pretraining, data_dir=config.PRETRAIN_DATA_DIR, run_dir=run_dir,
+                        sample_prompt=lambda: generation_prompt,
+                        verify_shards=config.PRETRAIN_VERIFY_SHARDS, init_from=config.PRETRAIN_INIT_FROM)
         title = "Language Pretraining"
+        if not headless:
+            generation_request = Event()
+            generate_text = partial(generate_pretraining_example, data_dir=config.PRETRAIN_DATA_DIR, run_dir=run_dir)
     else:
         from .training import run_training
 
-        worker = run_training
+        run_dir = args.run_dir
+        headless = args.headless
+        train = partial(run_training, data_dir=args.data_dir, run_dir=run_dir)
         title = "Tool Calling"
 
-    train = partial(worker, data_dir=args.data_dir, run_dir=args.run_dir)
-    log_path = args.run_dir / "training.log"
-    if args.headless:
+    log_path = run_dir / "training.log"
+    if headless:
         from .headless import run_headless
 
         return run_headless(train, log_path)
@@ -111,9 +115,15 @@ def _run_training(args: argparse.Namespace) -> int:
     from model_training.app import TrainingApp
 
     def dashboard_train(report, stop_event):
+        if generation_request is not None:
+            train(report, stop_event, log=app.file_logger, sample_prompt=lambda: app.generation_prompt,
+                  generation_request=generation_request)
+            return
         train(report, stop_event, log=app.file_logger)
 
-    app = TrainingApp(dashboard_train, title=title, preview_mode="text", log_path=log_path)
+    app = TrainingApp(dashboard_train, title=title, preview_mode="text", log_path=log_path,
+                      generation_request=generation_request, generate_text=generate_text,
+                      generation_prompt=generation_prompt)
     app.run()
     return 0
 

@@ -1317,6 +1317,7 @@ dependencies = [
     { name = "pillow" },
     { name = "textual" },
     { name = "textual-image" },
+    { name = "textual-plotext" },
 ]
 
 [package.metadata]
@@ -1324,6 +1325,7 @@ requires-dist = [
     { name = "pillow" },
     { name = "textual" },
     { name = "textual-image", specifier = ">=0.14.3" },
+    { name = "textual-plotext" },
 ]
 
 [[package]]
@@ -1897,6 +1899,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d7/9a/8475be631fb33ca1466915e70fd594c42a4e84b512db650eaa14f90fe75d/platformdirs-4.14.5.tar.gz", hash = "sha256:32e9921db7385aa8169bee4fe9501923e5715ba9fb7ea3b9c69b0d8e0639f7a1", size = 71464, upload-time = "2026-11-04T16:54:50.358Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7c/ae/ecbbbfd0e4343a6a521d49b3c8656fb4643dee2a4f6eaf941cf3280391a8/platformdirs-4.14.5-py3-none-any.whl", hash = "sha256:8e778c6fa421516f4d3369449f8df3b0e1b72c0e0005fe88e3ec772d0a14e750", size = 35402, upload-time = "2026-11-04T16:54:48.875Z" },
+]
+
+[[package]]
+name = "plotext"
+version = "5.3.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c9/d7/f75f397af966fe252d0d34ffd3cae765317fce2134f925f95e7d6725d1ce/plotext-5.3.2.tar.gz", hash = "sha256:52d1e932e67c177bf357a3f0fe6ce14d1a96f7f7d5679d7b455b929df517068e", size = 61967, upload-time = "2024-09-24T15:13:37.728Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f6/1e/12fe7c40cd2099a1f454518754ed229b01beaf3bbb343127f0cc13ce6c22/plotext-5.3.2-py3-none-any.whl", hash = "sha256:394362349c1ddbf319548cfac17ca65e6d5dfc03200c40dfdc0503b3e95a2283", size = 64047, upload-time = "2024-09-24T15:13:36.296Z" },
 ]
 
 [[package]]
@@ -2497,6 +2508,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/d8/03/2cbced4c9f12c99e87714157c160fc80914631fa3bdf28f107f7a7605291/textual_image-0.14.3.tar.gz", hash = "sha256:5e8ec5be9a314db7021fbedef663c978b0c59eab346dacf7d49ede6004a8bbbc", size = 181745, upload-time = "2026-11-10T20:41:39.467Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/26/eb/437369a7ca3effe4072b99ab2f7578805e4dec313dd7250309d2860bf125/textual_image-0.14.3-py3-none-any.whl", hash = "sha256:3cd6cc5ed1c493cbb3c221e0d576c5a0779f85a683ffe1b8ed29a1b93797f009", size = 184023, upload-time = "2026-11-10T20:41:38.173Z" },
+]
+
+[[package]]
+name = "textual-plotext"
+version = "1.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "plotext" },
+    { name = "textual" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9a/b0/e4e0f38df057db778252db0dd2c08522d7222b8537b6a0181d797b9044bd/textual_plotext-1.0.1.tar.gz", hash = "sha256:836f53a3316756609e194129a35c2875638e7958c261f541e0a794f7c98011be", size = 16489, upload-time = "2024-11-30T19:25:56.625Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/35/53/fba7da208f9d3f59254413660fa0aa6599f2aca806f3ae356670455fd4ea/textual_plotext-1.0.1-py3-none-any.whl", hash = "sha256:6b6bfd00b29f121ddf216eaaf9bdac9d688ed72f40028484d279a10cbbb169ed", size = 16558, upload-time = "2024-11-30T19:25:32.208Z" },
 ]
 
 [[package]]

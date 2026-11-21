@@ -39,10 +39,12 @@ uv run --with libzim==4.1.0 tool-calling prepare-pretrain \
   --tokenizer trained-models/tokenizers/simple-wikipedia-comparison/8192.json \
   --output-dir /mnt/StorageBox/datasets/pretrain-wiki-qa-8k-ctx1024
 
-uv run tool-calling pretrain \
-  --data-dir /mnt/StorageBox/datasets/pretrain-wiki-qa-8k-ctx1024 \
-  --run-dir trained-models/tool-calling/runs/pretrain-wiki-qa-8k-1024
+uv run --locked tool-calling pretrain
 ```
+
+Run from the workspace root. The `PRETRAIN_*` settings at the top of
+[`config.py`](src/tool_calling/config.py) select the prepared bundle, run
+directory, and launch behavior. `pretrain` takes no training arguments.
 
 The default context is 1,024 tokens. Preparation splits documents before
 packing and writes disk-backed windows of 1,025 IDs for shifted inputs and
@@ -56,19 +58,14 @@ logical CPUs by default. Use `--workers N` to leave CPU capacity for other jobs.
 It prints per-source window counts while it runs.
 
 Startup checks the manifest, tokenizer hash, and shard paths and sizes. It
-does not scan shard contents by default. Add `--verify-shards` to `pretrain`
-to read every shard and check its SHA-256 and token ID range. Without the flag,
+does not scan shard contents by default. Set `PRETRAIN_VERIFY_SHARDS = True`
+to read every shard and check its SHA-256 and token ID range. Otherwise,
 same-size shard changes aren't detected at startup.
 
 ### Run without the dashboard
 
-Add `--headless` to `train` or `pretrain` to start immediately without a TTY:
-
-```sh
-uv run --locked tool-calling pretrain --headless \
-  --data-dir /mnt/StorageBox/datasets/pretrain-wiki-qa-8k-ctx1024 \
-  --run-dir trained-models/tool-calling/runs/pretrain-wiki-qa-8k-1024
-```
+Set `PRETRAIN_HEADLESS = True` in `config.py` to start pretraining immediately
+without a TTY. The `train` command still uses `--headless`.
 
 Metrics, text previews, and errors stream to stderr and append to
 `<run-dir>/training.log`. Send `SIGTERM` to the training PID printed at
@@ -91,32 +88,31 @@ at the best weighted validation loss. To resume pretraining, use the same data
 and run directories, batch size, seed, and learning-rate schedule. The block
 schedule may change if the parameter names and shapes still match. Resume keeps
 AdamW moments, scaler, data cursor, and schedule position. Checkpoints from
-the old Adam optimizer can only initialize weights via `--init-from`, if
+the old Adam optimizer can only initialize weights via `PRETRAIN_INIT_FROM`, if
 the model and tokenizer still match. Historical best loss may not be comparable
 after a block schedule or validation-sample change.
 
-To reuse weights without continuing the old run state, pass `--init-from` with
-a latest or best pretraining checkpoint and a separate run directory:
-
-```sh
-uv run --locked tool-calling pretrain \
-  --data-dir /mnt/StorageBox/datasets/pretrain-wiki-qa-8k-ctx1024 \
-  --run-dir trained-models/tool-calling/runs/pretrain-wiki-qa-8k-1024-warm \
-  --init-from trained-models/tool-calling/runs/pretrain-wiki-qa-8k-1024/pretrain-best.pt
-```
+To reuse weights without continuing old run state, set `PRETRAIN_INIT_FROM`
+to the path of a latest or best pretraining checkpoint and set
+`PRETRAIN_RUN_DIR` to a separate run directory.
 
 This requires the same tokenizer and matching parameter names and shapes.
 Step, data cursor, validation history, optimizer state, and scaler start fresh.
-Once the new run has a checkpoint, omit `--init-from` to resume it.
+Once the new run has a checkpoint, set `PRETRAIN_INIT_FROM = None` to resume it.
 
 On a non-finite training loss, pretraining replays the failed batch before
 backpropagation and logs the first non-finite operation it can observe,
 including its module and loop pass. It still stops without applying the update.
 
-The **Generated examples** panel samples a continuation after the first
-completed update of each session and every 500 updates. It starts with
-`Training an LLM is` by default. Pass `--sample-prompt "Your opening text"`
-to change the prompt without changing checkpoint compatibility.
+The **Generated examples** panel samples after the first completed update of
+each session and every 500 updates. Press **E** to edit the prompt, **Enter**
+to apply it and immediately request a preview, or **Esc** to cancel.
+Press **G** to draw a fresh sample without changing the prompt. While training,
+requests run at a completed update; while idle, they use the latest checkpoint
+without starting training or writing a checkpoint.
+
+Edits last for the dashboard session. `PRETRAIN_SAMPLE_PROMPT` sets the initial
+prompt and the headless prompt, without affecting checkpoint compatibility.
 
 ## Prepare the data
 

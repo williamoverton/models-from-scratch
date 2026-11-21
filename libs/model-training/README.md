@@ -12,20 +12,29 @@ Pass `TrainingApp` (from `model_training.app`) a training function accepting
 
 | Mode | Dashboard |
 | --- | --- |
-| `"none"` | Metrics, loss history, and log only; used by Hello World. |
-| `"image"` | Image panel above the metrics; used by Doggie Diffusion. Pass both `generate` and `generation_request` to enable **G** for manual generation. |
-| `"text"` | Read-only **Generated examples** panel below the loss chart. No manual generation key. |
+| `"none"` | Loss charts and log only; used by Hello World. |
+| `"image"` | Image panel above the dashboard; used by Doggie Diffusion. Pass both `generate` and `generation_request` to enable **G** for manual generation. |
+| `"text"` | **Generated examples** panel below the loss charts. Pass `generate_text`, `generation_request`, and the initial `generation_prompt` to enable **G** and the **E** prompt editor. |
 
 Call `app.run()`. Use **S** to start, **X** to request a cooperative stop, and
 **Q** to stop and quit. The training function should check `stop_event` and
 perform any necessary cleanup before returning.
 
+For interactive text previews, **E** opens the editor and **Enter** applies
+the prompt and requests a new preview. **G** requests another preview with
+the current prompt. While training, the worker consumes `generation_request`
+and reads `app.generation_prompt` at a safe update boundary. While idle, the
+dashboard calls `generate_text(prompt)` on its generation worker.
+
 ## Publishing progress
 
 Report `TrainingProgress` snapshots from the worker. `step` counts completed
 parameter updates; use `total_steps=None` when the run has no fixed length.
-Each report owns a fresh metrics dictionary. A metric named `loss` adds one
-point to the loss chart. Do not mutate published dictionaries or Pillow images.
+Each report owns a fresh metrics dictionary. The **Loss** tab plots `loss`
+and `validation loss` side by side against completed updates using
+`textual-plotext`. The validation chart only adds points when validation is
+reported; other metrics remain in the training log. Do not mutate published
+dictionaries or Pillow images.
 
 An optional `preview` carries display-ready data matching the launcher's mode:
 `ImageGenerationPreview` for images, or `TextGenerationPreview` for text. The

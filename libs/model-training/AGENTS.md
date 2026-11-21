@@ -3,8 +3,9 @@
 Read [README.md](README.md) for the callback and dashboard mode contract.
 
 - Require each launcher to select `preview_mode`: `"none"`, `"image"`, or `"text"`.
-  Keep the existing image panel layout and only expose **G** in image mode with
-  both generation hooks. Metrics-only launchers must not gain preview controls.
+  Keep the existing image panel layout and its **G** callback contract.
+  Only show text prompt editing and generation controls for interactive text
+  launchers that supply the generation hooks. Metrics-only launchers must not gain them.
 - Keep model imports, Torch, tokenization, tool definitions and execution, and
   sampling policy out of this library. Model workers publish complete, display-ready
   snapshots through `TrainingProgress`; update widgets only on the UI thread.

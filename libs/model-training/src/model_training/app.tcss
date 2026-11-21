@@ -20,17 +20,13 @@ Screen {
     margin-bottom: 1;
 }
 
-#metrics Static {
-    height: auto;
+#loss-charts {
+    height: 14;
 }
 
-#loss-caption {
-    height: auto;
-    color: $text-muted;
-}
-
-#loss-history {
-    height: 4;
+#loss-charts PlotextPlot {
+    width: 1fr;
+    height: 100%;
 }
 
 #text-generation {
