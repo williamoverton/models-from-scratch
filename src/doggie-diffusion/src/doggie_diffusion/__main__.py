@@ -5,7 +5,7 @@ from model_training.app import TrainingApp
 from model_training.progress import ProgressCallback
 
 from .settings import ModelSettings, TrainingSettings
-from .training import generate_from_checkpoint, train
+from .training import CHECKPOINT_PATH, generate_from_checkpoint, train
 
 
 def run_training(
@@ -28,6 +28,7 @@ def main() -> None:
         partial(run_training, generation_request=generation_request),
         title="Doggie Diffusion",
         preview_mode="image",
+        history_path=CHECKPOINT_PATH.with_name("metrics.sqlite3"),
         generate=generate_from_checkpoint,
         generation_request=generation_request,
     )

@@ -36,6 +36,20 @@ and `validation loss` side by side against completed updates using
 reported; other metrics remain in the training log. Do not mutate published
 dictionaries or Pillow images.
 
+For a resumable run, give `TrainingApp` a `history_path` alongside its
+checkpoint. The dashboard loads the saved loss curves on open. The training
+worker must publish `TrainingStarted(step)` after loading its checkpoint
+(or `TrainingStarted(0)` for a fresh model), before publishing any metrics.
+That event discards points beyond the restored step, so a resumed run does
+not graph work lost since its last checkpoint.
+
+`MetricsHistory` stores finite scalar reports in SQLite as `(name, step,
+value)`. A new value for the same metric and step replaces the old value;
+metrics absent from a report are unchanged. Headless runners can use the
+same store so their reports appear in the dashboard later. History starts
+with reports made while persistence is enabled; existing text logs are not
+imported. Launchers without `history_path` keep transient, per-start charts.
+
 An optional `preview` carries display-ready data matching the launcher's mode:
 `ImageGenerationPreview` for images, or `TextGenerationPreview` for text. The
 preview's own `step` is the step that produced the sample. A text snapshot contains

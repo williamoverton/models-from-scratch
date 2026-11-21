@@ -39,6 +39,13 @@ class TextGenerationPreview:
 
 
 @dataclass(frozen=True)
+class TrainingStarted:
+    """The restored checkpoint step, or zero when starting from scratch."""
+
+    step: int
+
+
+@dataclass(frozen=True)
 class TrainingProgress:
     """A model-independent snapshot of training progress.
 
@@ -59,4 +66,4 @@ class TrainingProgress:
     preview: ImageGenerationPreview | TextGenerationPreview | None = None
 
 
-type ProgressCallback = Callable[[TrainingProgress], None]
+type ProgressCallback = Callable[[TrainingStarted | TrainingProgress], None]

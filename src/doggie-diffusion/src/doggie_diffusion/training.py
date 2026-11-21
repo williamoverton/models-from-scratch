@@ -14,6 +14,7 @@ from model_training.progress import (
     ImageGenerationRow,
     ProgressCallback,
     TrainingProgress,
+    TrainingStarted,
 )
 
 from .checkpoint import load_checkpoint, save_checkpoint
@@ -101,6 +102,7 @@ def train(
 
     # Resume learned parameters and optimizer state when a save exists.
     step = load_checkpoint(CHECKPOINT_PATH, model, optimizer, scaler, ema_model)
+    on_progress(TrainingStarted(step))
     model.train()
     # Compile execution in place so checkpoint parameter names stay unchanged.
     model.compile()

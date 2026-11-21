@@ -13,3 +13,6 @@ Read [README.md](README.md) for the callback and dashboard mode contract.
   literally. Replace whole previews, retain them across metric-only updates and
   Stop, and clear them on Start. Preview-only reports (`metrics={}` with a preview)
   must not change the training step display, metrics, or loss history.
+- Keep metric history run-local and independent of model checkpoint formats.
+  Only a worker's `TrainingStarted` event establishes the restored step; do
+  not infer it from logs or the first metric report.

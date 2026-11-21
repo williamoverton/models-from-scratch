@@ -42,7 +42,8 @@ def main() -> None:
 
     train = commands.add_parser("train", help="Open the dashboard, then press S to start or resume.")
     train.add_argument("--data-dir", type=Path, required=True, help="Directory from prepare-data.")
-    train.add_argument("--run-dir", type=Path, required=True, help="Directory for checkpoint.pt and training.log.")
+    train.add_argument("--run-dir", type=Path, required=True,
+                       help="Directory for checkpoint.pt, training.log, and metrics.sqlite3.")
 
     train.add_argument("--headless", action="store_true",
                        help="Start immediately without the dashboard; SIGINT or SIGTERM saves and stops.")
@@ -90,6 +91,7 @@ def _run_training(args: argparse.Namespace) -> int:
         if not launch.sample_prompt.strip():
             raise SystemExit("PretrainConfig.sample_prompt must contain non-whitespace text.")
         run_dir = launch.run_dir
+        history_path = run_dir / "pretrain-metrics.sqlite3"
         headless = launch.headless
         generation_prompt = launch.sample_prompt
         train = partial(run_pretraining, data_dir=launch.data_dir, run_dir=run_dir,
@@ -103,6 +105,7 @@ def _run_training(args: argparse.Namespace) -> int:
         from .training import run_training
 
         run_dir = args.run_dir
+        history_path = run_dir / "metrics.sqlite3"
         headless = args.headless
         train = partial(run_training, data_dir=args.data_dir, run_dir=run_dir)
         title = "Tool Calling"
@@ -111,7 +114,7 @@ def _run_training(args: argparse.Namespace) -> int:
     if headless:
         from .headless import run_headless
 
-        return run_headless(train, log_path)
+        return run_headless(train, log_path, history_path=history_path)
 
     from model_training.app import TrainingApp
 
@@ -123,6 +126,7 @@ def _run_training(args: argparse.Namespace) -> int:
         train(report, stop_event, log=app.file_logger)
 
     app = TrainingApp(dashboard_train, title=title, preview_mode="text", log_path=log_path,
+                      history_path=history_path,
                       generation_request=generation_request, generate_text=generate_text,
                       generation_prompt=generation_prompt)
     app.run()

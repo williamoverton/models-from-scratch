@@ -84,7 +84,11 @@ The rolling checkpoint is
 `trained-models/doggie-diffusion-dense-skips/checkpoint.pt`, relative to the
 working directory. Resume restores model weights, optimizer state (including
 its saved learning rate), scaler, EMA, and processed step count; data shuffling
-starts anew. The denser-skip architecture starts fresh: previous checkpoints
+starts anew. Reported metrics are stored in `metrics.sqlite3` alongside the
+checkpoint. The dashboard restores the saved loss curve on open and trims
+points beyond the checkpoint step on resume.
+
+The denser-skip architecture starts fresh: previous checkpoints
 under `trained-models/doggie-diffusion/` remain untouched and are incompatible
 with the new decoder. Strict loading is retained; no weight migration is done.
 Quit and reopen an already-running dashboard to load the new architecture.

@@ -6,7 +6,7 @@ from pathlib import Path
 from threading import Event
 from time import perf_counter
 
-from model_training.progress import ProgressCallback, TrainingProgress
+from model_training.progress import ProgressCallback, TrainingProgress, TrainingStarted
 import torch
 
 from .batching import TokenBatcher, load_bundle
@@ -84,6 +84,7 @@ def run_training(report: ProgressCallback, stop_event: Event, *, data_dir: Path,
                  "Fresh run" if step == 0 else "Resuming", step, device,
                  sum(parameter.numel() for parameter in model.parameters()), config.context_length,
                  len(bundle.train), len(bundle.validation))
+        report(TrainingStarted(step))
         tokenizer, manifest_digest = bundle.tokenizer, bundle.manifest_digest
         validation = Validation(bundle.validation, tokenizer, config, stop_event)
         del bundle  # Validation retains only the selected records and tool-name prefixes.

@@ -15,12 +15,14 @@ from textual.worker import WorkerCancelled, get_current_worker
 from textual.widgets import Footer, Header, Input, RichLog, Static, TabbedContent, TabPane
 from textual_plotext import PlotextPlot
 
+from model_training.history import MetricsHistory
 from model_training.preview import ImageGenerationPanel, TextGenerationPanel
 from model_training.progress import (
     ImageGenerationPreview,
     ProgressCallback,
     TextGenerationPreview,
     TrainingProgress,
+    TrainingStarted,
 )
 
 
@@ -74,6 +76,7 @@ class TrainingApp(App):
         title: str,
         preview_mode: Literal["none", "image", "text"],
         log_path: Path = Path("logs/training.log"),
+        history_path: Path | None = None,
         generate: Callable[[], ImageGenerationPreview] | None = None,
         generation_request: Event | None = None,
         generate_text: Callable[[str], TextGenerationPreview] | None = None,
@@ -90,6 +93,8 @@ class TrainingApp(App):
         self.generate_text = generate_text
         self.generation_prompt = generation_prompt
         self.generation_running = False
+        self.history_path = history_path
+        self.metrics_history: MetricsHistory | None = None
 
         # Append timestamped messages without sending logging output into the TUI.
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -121,7 +126,9 @@ class TrainingApp(App):
                 termios.tcsetattr(terminal_fd, termios.TCSANOW, original_mode)
 
     def on_unmount(self) -> None:
-        """Close the file log when the dashboard exits."""
+        """Close the metric database and file log when the dashboard exits."""
+        if self.metrics_history is not None:
+            self.metrics_history.close()
         self.file_logger.info("Dashboard closed.")
         self.log_handler.close()
 
@@ -147,11 +154,13 @@ class TrainingApp(App):
     def on_mount(self) -> None:
         """Initialize display history and training controls."""
         self.training_running = False
-        self.loss_history: dict[str, dict[int, float]] = {metric: {} for metric, _, _ in _LOSS_CHARTS}
+        if self.history_path is not None:
+            self.metrics_history = MetricsHistory(self.history_path)
         for _, chart_id, title in _LOSS_CHARTS:
             plot = self.query_one(f"#{chart_id}", PlotextPlot).plt
             plot.title(title)
             plot.xlabel("Update")
+        self._reload_loss_history()
         self.query_one("#training-log").border_title = "Training log"
         self.write_log("Ready: S starts training; X stops; Q stops and quits.")
 
@@ -164,9 +173,8 @@ class TrainingApp(App):
         self.quit_requested = False
         if self.generation_request is not None:
             self.generation_request.clear()
-        for metric, chart_id, _ in _LOSS_CHARTS:
-            self.loss_history[metric].clear()
-            self._draw_loss_chart(metric, chart_id)
+        if self.metrics_history is None:
+            self._reload_loss_history()
         if self.preview_mode == "image":
             self.query_one(ImageGenerationPanel).reset_preview()
         elif self.preview_mode == "text":
@@ -273,7 +281,7 @@ class TrainingApp(App):
         """Run the experiment off the UI thread and hand results back safely."""
         worker = get_current_worker()
 
-        def report(progress: TrainingProgress) -> None:
+        def report(progress: TrainingStarted | TrainingProgress) -> None:
             if worker.is_cancelled:
                 raise WorkerCancelled()
             self.call_from_thread(self.show_progress, progress)
@@ -313,8 +321,15 @@ class TrainingApp(App):
         """Replace the current training status."""
         self.query_one("#status", Static).update(status)
 
-    def show_progress(self, progress: TrainingProgress) -> None:
-        """Update the active preview and chart loss only from metric reports."""
+    def show_progress(self, progress: TrainingStarted | TrainingProgress) -> None:
+        """Reconcile resumed history or display a training report."""
+        if isinstance(progress, TrainingStarted):
+            if self.metrics_history is not None:
+                self.metrics_history.resume(progress.step)
+                self._reload_loss_history()
+            return
+        if self.metrics_history is not None:
+            self.metrics_history.record(progress)
         preview = progress.preview
         if self.preview_mode == "image" and isinstance(preview, ImageGenerationPreview):
             self.query_one(ImageGenerationPanel).show_preview(preview)
@@ -332,6 +347,15 @@ class TrainingApp(App):
             f"Step {progress.step}: "
             + ", ".join(f"{name}={value:.6g}" for name, value in progress.metrics.items())
         )
+
+    def _reload_loss_history(self) -> None:
+        """Rebuild both charts from the saved history, or clear transient charts."""
+        self.loss_history: dict[str, dict[int, float]] = {}
+        for metric, chart_id, _ in _LOSS_CHARTS:
+            self.loss_history[metric] = (
+                self.metrics_history.series(metric) if self.metrics_history is not None else {}
+            )
+            self._draw_loss_chart(metric, chart_id)
 
     def _draw_loss_chart(self, metric: str, chart_id: str) -> None:
         """Redraw one loss series against actual completed updates."""

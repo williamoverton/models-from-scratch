@@ -27,3 +27,5 @@ superseding the initial 10,000-image subset.
 Keep diffusion, data, model settings, and training logic in this project;
 shared dashboard code must remain model-independent. Follow the root project
 rules for CUDA use, simple PyTorch components, and verification permissions.
+Publish the restored checkpoint step before the first metric report and keep
+the dashboard's metric history alongside that checkpoint.

@@ -14,7 +14,7 @@ from threading import Event
 from time import perf_counter
 
 from model_tokenizer import Tokenizer
-from model_training.progress import ProgressCallback, TextGenerationPreview, TrainingProgress
+from model_training.progress import ProgressCallback, TextGenerationPreview, TrainingProgress, TrainingStarted
 import numpy as np
 import torch
 from torch.nn import functional as F
@@ -374,11 +374,12 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
             log.info("Starting pretraining from scratch.")
     else:
         progress, previous_metadata = restored
-        log.info("Resuming pretraining at completed update %s.", progress.step)
         # Latest is published first. If interrupted before publishing best, latest still
         # contains those exact weights until the run is able to continue.
         if progress.best_step and progress.best_step == progress.step:
             save_best(previous_metadata)
+        log.info("Resuming pretraining at completed update %s.", progress.step)
+    report(TrainingStarted(progress.step))
 
     saved = asdict(progress)
 

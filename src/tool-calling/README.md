@@ -120,6 +120,15 @@ without starting training or writing a checkpoint.
 Edits last for the dashboard session. `PretrainConfig.sample_prompt` sets the initial
 prompt and the headless prompt, without affecting checkpoint compatibility.
 
+## Training metric history
+
+Dashboard and headless runs share a SQLite history in the run directory:
+`pretrain-metrics.sqlite3` for `pretrain`, and `metrics.sqlite3` for `train`.
+The database records finite scalar metrics by step, not text previews or
+log messages. On resume it keeps metrics through the restored checkpoint step
+and removes later points, which may come from updates that were not saved.
+Existing `training.log` files are not imported.
+
 ## Prepare the data
 
 Set up the repository environment using the [development guide](../../DEVELOMENT.md).
