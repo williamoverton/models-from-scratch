@@ -11,7 +11,7 @@ from pathlib import Path
 import stat
 from tempfile import NamedTemporaryFile
 from threading import Event
-from time import perf_counter
+from time import perf_counter, sleep
 
 from model_tokenizer import Tokenizer
 from model_training.progress import ProgressCallback, TextGenerationPreview, TrainingProgress, TrainingStarted
@@ -25,6 +25,7 @@ from .forward_trace import log_forward_failure
 from .generation import SAMPLE_INTERVAL, create_pretraining_preview
 from .model import LanguageModel
 from .precision import autocast
+from .pretrain_citations import WikipediaCitationFilter
 
 _LATEST = "pretrain-latest.pt"
 _BEST = "pretrain-best.pt"
@@ -33,6 +34,7 @@ _OPTIMIZER = "fused-adamw"
 _SOURCES = ("wikipedia", "qa")
 _MIX = ("wikipedia",) * 9 + ("qa",)
 _TOKEN_DTYPE = np.dtype("<u2")
+_IGNORE_TARGET = -100
 
 
 class _Split:
@@ -50,8 +52,9 @@ class _Split:
     def __len__(self) -> int:
         return int(self.ends[-1]) * self.windows_per_row
 
-    def batch(self, indices: np.ndarray, device: torch.device) -> torch.Tensor:
-        """Gather only the selected windows, preserving their shuffled order."""
+    def batch(self, indices: np.ndarray, device: torch.device,
+              citation_filter: WikipediaCitationFilter | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        """Gather shuffled windows and return shifted inputs and targets."""
         rows = np.empty((len(indices), self.context_length + 1), dtype=np.int64)
         row_ids, slots = np.divmod(indices, self.windows_per_row) if self.windows_per_row > 1 else (indices, None)
         shard_ids = np.searchsorted(self.ends, row_ids, side="right")
@@ -65,7 +68,26 @@ class _Split:
             else:
                 starts = slots[positions] * self.context_length
                 rows[positions] = shard[local_rows[:, None], starts[:, None] + self.columns]
-        return torch.from_numpy(rows).to(device)
+        padded = False
+        if citation_filter is not None:
+            target_count = len(rows) * self.context_length
+            for row in rows:
+                cleaned = citation_filter.clean(row)
+                if cleaned is None:
+                    continue
+                kept = min(len(cleaned), len(row))
+                row[:kept] = cleaned[:kept]
+                row[kept:] = _IGNORE_TARGET
+                padded |= kept < len(row)
+                target_count -= self.context_length - max(kept - 1, 0)
+            if not target_count:
+                raise ValueError("Wikipedia citation filtering left the batch without next-token targets.")
+        tokens = torch.from_numpy(rows).to(device)
+        inputs = tokens[:, :-1]
+        # Byte zero is a valid filler ID. Right padding cannot affect earlier causal predictions.
+        if padded:
+            inputs = inputs.clamp_min(0)
+        return inputs, tokens[:, 1:]
 
 
 @dataclass(frozen=True)
@@ -298,15 +320,30 @@ def _restore(path: Path, metadata: dict, model: LanguageModel, optimizer: torch.
         raise ValueError(f"Cannot resume {path}: {error} For a fresh start, change PretrainConfig.run_dir.") from error
 
 
-def _loss(model: LanguageModel, tokens: torch.Tensor, reduction: str) -> torch.Tensor:
-    """Score all context-length next-token targets in a [batch, context+1] window."""
-    logits = model(tokens[:, :-1])
-    return F.cross_entropy(logits.flatten(0, 1), tokens[:, 1:].flatten(), reduction=reduction)
+def _loss(model: LanguageModel, batch: tuple[torch.Tensor, torch.Tensor],
+          reduction: str) -> torch.Tensor:
+    """Score shifted targets, excluding padding after removed citations."""
+    inputs, targets = batch
+    logits = model(inputs)
+    return F.cross_entropy(logits.flatten(0, 1), targets.flatten(),
+                           ignore_index=_IGNORE_TARGET, reduction=reduction)
+
+
+def _pace(stop_event: Event, step_delay: Callable[[], float]) -> float:
+    """Idle after a unit of GPU work; return the end time for throughput accounting."""
+    completed_at = finished_at = perf_counter()
+    remaining = step_delay()
+    # Re-read live edits during short sleeps without taking the headless signal handler's event lock.
+    while remaining > 0 and not stop_event.is_set():
+        sleep(min(remaining, 0.1))
+        finished_at = perf_counter()
+        remaining = step_delay() - (finished_at - completed_at)
+    return finished_at
 
 
 @torch.no_grad()
 def _validate(model: LanguageModel, validation: dict[str, _Split], config: Config,
-              device: torch.device, stop_event: Event) -> dict[str, float] | None:
+              device: torch.device, stop_event: Event, step_delay: Callable[[], float]) -> dict[str, float] | None:
     """Evaluate fixed, independent held-out samples and weight them like the training mix."""
     model.eval()
     try:
@@ -320,9 +357,11 @@ def _validate(model: LanguageModel, validation: dict[str, _Split], config: Confi
             for start in range(0, sample_size, config.batch_size):
                 if stop_event.is_set():
                     return None
-                tokens = split.batch(indices[start:start + config.batch_size], device)
+                batch = split.batch(indices[start:start + config.batch_size], device)
                 with autocast():
-                    total += _loss(model, tokens, "sum").item()
+                    total += _loss(model, batch, "sum").item()
+                del batch
+                _pace(stop_event, step_delay)
             if not isfinite(total):
                 raise FloatingPointError(f"Non-finite {source} validation loss.")
             losses[source] = total / (sample_size * config.context_length)
@@ -334,7 +373,7 @@ def _validate(model: LanguageModel, validation: dict[str, _Split], config: Confi
 def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir: Path,
            bundle: _Bundle, config: Config, device: torch.device, model: LanguageModel,
            optimizer: torch.optim.AdamW, scaler: torch.amp.GradScaler, sample_prompt: Callable[[], str],
-           init_from: Path | None, generation_request: Event | None) -> None:
+           init_from: Path | None, generation_request: Event | None, step_delay: Callable[[], float]) -> None:
     """Keep the mix, data cursors, validation cadence, and best record stable across resumes."""
     settings = asdict(config)
     # Keep the on-disk name for the LR endpoint so saved runs resume unchanged.
@@ -399,9 +438,14 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
         log.info("Saved latest checkpoint at step %s: %s", progress.step, latest_path)
 
     tokens_per_step = config.batch_size * config.context_length
+    citation_filter = WikipediaCitationFilter(bundle.tokenizer)
+    log.info("Filtering numeric citations from Wikipedia training windows; validation is unchanged.")
     log.info("Pretraining runs until stopped; warmup: %s tokens, peak LR %g, floor %g from %s tokens.",
              config.pretrain_warmup_tokens, config.pretrain_peak_lr, config.pretrain_final_lr,
              config.pretrain_decay_end_tokens)
+    initial_delay = step_delay()
+    if initial_delay:
+        log.info("Pretraining slowdown: %g seconds of idle time after each update and validation batch.", initial_delay)
 
     def validate_if_due() -> dict[str, float]:
         """Retry a due validation on resume if Stop interrupted it before completion."""
@@ -409,7 +453,7 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
         if (step <= progress.validated_step or (step != 1 and step % config.eval_interval)
                 or stop_event.is_set()):
             return {}
-        losses = _validate(model, bundle.validation, config, device, stop_event)
+        losses = _validate(model, bundle.validation, config, device, stop_event, step_delay)
         if losses is None:
             return {}
         weighted = sum(losses[source] for source in _MIX) / len(_MIX)
@@ -440,21 +484,21 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
         source = _MIX[progress.step % len(_MIX)]
         cursor = progress.source_batches()[source] * config.batch_size
         rows = samplers[source].take(cursor, config.batch_size)
-        tokens = bundle.train[source].batch(rows, device)
+        batch = bundle.train[source].batch(rows, device, citation_filter if source == "wikipedia" else None)
         learning_rate = _learning_rate(config, (progress.step + 1) * tokens_per_step)
         for group in optimizer.param_groups:
             group["lr"] = learning_rate
         # A skipped update retries the same rows and learning rate.
         while not stop_event.is_set():
             with autocast():
-                loss = _loss(model, tokens, "mean")
+                loss = _loss(model, batch, "mean")
             loss_value = loss.item()
             if not isfinite(loss_value):
                 del loss
                 log.error("Tracing non-finite loss %s before update %s (%s, rows %s).",
                           loss_value, progress.step + 1, source, rows.tolist())
                 with autocast():
-                    log_forward_failure(model, lambda: _loss(model, tokens, "mean"), log)
+                    log_forward_failure(model, lambda: _loss(model, batch, "mean"), log)
                 raise FloatingPointError(f"Non-finite pretraining loss before update {progress.step + 1}.")
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -476,8 +520,8 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
             break
         else:
             break
-        del tokens
-        measured_seconds += perf_counter() - started
+        del batch
+        measured_seconds += _pace(stop_event, step_delay) - started
         validation_metrics = validate_if_due()
         stopping = stop_event.is_set()
         if (stopping or progress.step % config.checkpoint_interval == 0) and progress.step != saved["step"]:
@@ -554,9 +598,13 @@ def generate_pretraining_example(prompt: str, *, data_dir: Path, run_dir: Path) 
 
 def run_pretraining(report: ProgressCallback, stop_event: Event, *, data_dir: Path,
                     run_dir: Path, log: Logger, sample_prompt: Callable[[], str],
+                    step_delay: Callable[[], float],
                     verify_shards: bool = False, init_from: Path | None = None,
                     generation_request: Event | None = None) -> None:
     """Run resumable CUDA FP16/fused AdamW pretraining until stopped."""
+    initial_delay = step_delay()
+    if not isfinite(initial_delay) or initial_delay < 0:
+        raise ValueError("PretrainConfig.step_delay_seconds must be finite and nonnegative.")
     if stop_event.is_set():
         return
     if not torch.cuda.is_available():
@@ -578,4 +626,4 @@ def run_pretraining(report: ProgressCallback, stop_event: Event, *, data_dir: Pa
                  config.batch_size)
         _train(report, stop_event, log=log, run_dir=run_dir, bundle=bundle, config=config,
                device=device, model=model, optimizer=optimizer, scaler=scaler, sample_prompt=sample_prompt,
-               init_from=init_from, generation_request=generation_request)
+               init_from=init_from, generation_request=generation_request, step_delay=step_delay)

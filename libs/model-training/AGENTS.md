@@ -6,6 +6,9 @@ Read [README.md](README.md) for the callback and dashboard mode contract.
   Keep the existing image panel layout and its **G** callback contract.
   Only show text prompt editing and generation controls for interactive text
   launchers that supply the generation hooks. Metrics-only launchers must not gain them.
+- Show **D** only when a launcher opts in with a non-`None` `step_delay_seconds`.
+  The dashboard owns editing and logging this session-local value. The model
+  worker reads `app.step_delay_seconds` without accessing widgets and owns waiting.
 - Keep model imports, Torch, tokenization, tool definitions and execution, and
   sampling policy out of this library. Model workers publish complete, display-ready
   snapshots through `TrainingProgress`; update widgets only on the UI thread.

@@ -83,6 +83,7 @@ def _run_training(args: argparse.Namespace) -> int:
     generation_request = None
     generate_text = None
     generation_prompt = ""
+    step_delay_seconds = None
     if args.command == "pretrain":
         from .config import PretrainConfig
         from .pretraining import generate_pretraining_example, run_pretraining
@@ -94,9 +95,11 @@ def _run_training(args: argparse.Namespace) -> int:
         history_path = run_dir / "pretrain-metrics.sqlite3"
         headless = launch.headless
         generation_prompt = launch.sample_prompt
+        step_delay_seconds = launch.step_delay_seconds
         train = partial(run_pretraining, data_dir=launch.data_dir, run_dir=run_dir,
                         sample_prompt=lambda: generation_prompt,
-                        verify_shards=launch.verify_shards, init_from=launch.init_from)
+                        verify_shards=launch.verify_shards, init_from=launch.init_from,
+                        step_delay=lambda: launch.step_delay_seconds)
         title = "Language Pretraining"
         if not headless:
             generation_request = Event()
@@ -121,14 +124,14 @@ def _run_training(args: argparse.Namespace) -> int:
     def dashboard_train(report, stop_event):
         if generation_request is not None:
             train(report, stop_event, log=app.file_logger, sample_prompt=lambda: app.generation_prompt,
-                  generation_request=generation_request)
+                  generation_request=generation_request, step_delay=lambda: app.step_delay_seconds or 0.0)
             return
         train(report, stop_event, log=app.file_logger)
 
     app = TrainingApp(dashboard_train, title=title, preview_mode="text", log_path=log_path,
                       history_path=history_path,
                       generation_request=generation_request, generate_text=generate_text,
-                      generation_prompt=generation_prompt)
+                      generation_prompt=generation_prompt, step_delay_seconds=step_delay_seconds)
     app.run()
     return 0
 

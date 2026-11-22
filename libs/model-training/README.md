@@ -26,6 +26,15 @@ the current prompt. While training, the worker consumes `generation_request`
 and reads `app.generation_prompt` at a safe update boundary. While idle, the
 dashboard calls `generate_text(prompt)` on its generation worker.
 
+Launchers can pass `step_delay_seconds` to enable **D** (**Step delay**).
+`None` (the default) hides the control; `0.0` enables it with no delay.
+While training or idle, **D** opens the editor at the current value. **Enter**
+applies a finite, nonnegative number of seconds (`0` disables the delay), and
+**Esc** cancels. Invalid input leaves the editor open with an error. The
+dashboard logs changes without restarting training.
+The value lives in `app.step_delay_seconds` for the current dashboard session;
+the model worker reads it at an update boundary and owns applying the delay.
+
 ## Training logs
 
 Each Start rotates the existing nonempty log before writing the new training

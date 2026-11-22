@@ -63,10 +63,35 @@ Preparation parses and tokenizes in worker processes, using all available
 logical CPUs by default. Use `--workers N` to leave CPU capacity for other jobs.
 It prints per-source window counts while it runs.
 
+During pretraining, fetched Wikipedia training windows are filtered for
+complete numeric citation markers such as `[72][73]`. This does not rewrite
+the bundle or reset the checkpoint. A marker split across windows is not
+removed; legitimate text like `[72]` is indistinguishable from a citation.
+Q&A and held-out validation windows are unchanged. Shortened windows keep
+their original tensor shape, but padding is excluded from the loss. The
+learning-rate schedule and token counters still use the original window
+size, preserving the schedule position when resuming.
+
 Startup checks the manifest, tokenizer hash, and shard paths and sizes. It
 does not scan shard contents by default. Set `PretrainConfig.verify_shards`
 to `True` to read every shard and check its SHA-256 and token ID range. Otherwise,
 same-size shard changes aren't detected at startup.
+
+### Slow down overnight
+
+In the pretraining dashboard, press **D** to edit the delay while training
+or while idle. Enter seconds (try `0.5`), press **Enter** to apply, or **Esc**
+to cancel. Enter `0` to turn it off. Changes take effect without restarting,
+including during an existing delay, and last until you close the dashboard.
+
+`PretrainConfig.step_delay_seconds` in [`config.py`](src/tool_calling/config.py)
+sets the initial dashboard value and the headless delay. The default is `0.0`.
+
+The worker idles after each completed optimizer update and each validation
+batch. Reported training tokens/s includes the delay after updates but
+excludes validation time. Checkpoint compatibility, learning-rate schedule,
+and validation cadence in steps are unchanged. This spaces out GPU work
+without capping power during individual batches or slowing previews.
 
 ### Run without the dashboard
 

@@ -59,6 +59,44 @@ class _PromptEditor(ModalScreen[str | None]):
             self.dismiss(event.value)
 
 
+class _StepDelayEditor(ModalScreen[float | None]):
+    """Submit a finite nonnegative delay in seconds or cancel with Escape."""
+
+    BINDINGS = [("escape", "dismiss", "Cancel")]
+    AUTO_FOCUS = "Input"
+    DEFAULT_CSS = """
+    _StepDelayEditor { align: center middle; }
+    _StepDelayEditor Vertical { width: 80%; height: auto; }
+    _StepDelayEditor #step-delay-error { color: $error; }
+    """
+
+    def __init__(self, delay: float):
+        super().__init__()
+        self.delay = delay
+
+    def compose(self) -> ComposeResult:
+        """Show the current delay and an inline validation message."""
+        with Vertical(classes="panel"):
+            yield Static(
+                "Step delay (seconds; 0 disables) · Enter to apply · Esc to cancel"
+            )
+            yield Input(str(self.delay))
+            yield Static(id="step-delay-error")
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Commit valid seconds without closing the editor on invalid input."""
+        try:
+            delay = float(event.value)
+        except ValueError:
+            delay = None
+        if delay is not None and isfinite(delay) and delay >= 0:
+            self.dismiss(delay)
+        else:
+            self.query_one("#step-delay-error", Static).update(
+                "Enter a finite number of seconds greater than or equal to 0."
+            )
+
+
 class TrainingApp(App):
     CSS_PATH = "app.tcss"
     TITLE = "Models From Scratch"
@@ -67,6 +105,7 @@ class TrainingApp(App):
         ("x", "stop_training", "Stop"),
         ("g", "generate", "Generate"),
         ("e", "edit_prompt", "Edit prompt"),
+        ("d", "edit_step_delay", "Step delay"),
         ("q", "quit", "Quit"),
     ]
 
@@ -82,6 +121,7 @@ class TrainingApp(App):
         generation_request: Event | None = None,
         generate_text: Callable[[str], TextGenerationPreview] | None = None,
         generation_prompt: str = "",
+        step_delay_seconds: float | None = None,
     ) -> None:
         super().__init__()
         self.train = train
@@ -94,6 +134,7 @@ class TrainingApp(App):
         self.generate_text = generate_text
         self.generation_prompt = generation_prompt
         self.generation_running = False
+        self.step_delay_seconds = step_delay_seconds
         self.history_path = history_path
         self.metrics_history: MetricsHistory | None = None
 
@@ -195,7 +236,9 @@ class TrainingApp(App):
         self.write_log("Stop requested; waiting for training to finish.")
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Expose generation controls only for launchers that supply the hooks."""
+        """Expose optional controls only when a launcher enables them."""
+        if action == "edit_step_delay":
+            return self.step_delay_seconds is not None
         if action == "edit_prompt":
             return self.generate_text is not None and not self.generation_running
         if action == "generate":
@@ -215,6 +258,19 @@ class TrainingApp(App):
         if prompt is not None:
             self.generation_prompt = prompt
             self.action_generate()
+
+    def action_edit_step_delay(self) -> None:
+        """Open the session delay editor with its current value."""
+        if self.step_delay_seconds is not None:
+            self.push_screen(
+                _StepDelayEditor(self.step_delay_seconds), self._apply_step_delay
+            )
+
+    def _apply_step_delay(self, delay: float | None) -> None:
+        """Keep the submitted delay for the current dashboard session."""
+        if delay is not None:
+            self.step_delay_seconds = delay
+            self.write_log(f"Step delay set to {delay} seconds.")
 
     def action_generate(self) -> None:
         """Queue a training preview or generate from a checkpoint while idle."""

@@ -15,6 +15,7 @@ class PretrainConfig:
     sample_prompt: str = "Training an LLM is"
     verify_shards: bool = False
     headless: bool = False
+    step_delay_seconds: float = 0.0
 
 
 type BlockSpec = Literal["convolution", "global", "l2-norm"] | tuple[Literal["local"], int]
