@@ -10,7 +10,7 @@
   left by the filter from next-token loss.
 - Keep model and training settings shared in `config.py`. Both training modes use `Config.batch_size` directly; do not add CLI overrides for it.
 - Keep pretraining launch settings in `PretrainConfig`, separate from checkpointed model settings. The `pretrain` command takes no training arguments.
-- Keep `PretrainConfig.step_delay_seconds` out of checkpoint settings. Pace committed updates and validation batches with the same live delay. Include only update delays in training throughput, and keep Stop responsive in Textual and headless mode.
+- Keep `PretrainConfig.step_delay_seconds` out of checkpoint settings. Pace committed updates with the live delay and forward-only validation batches with one third of it. Include only update delays in training throughput, and keep Stop responsive in Textual and headless mode.
   The pretraining dashboard supplies a session-local delay to the worker; live edits never rewrite `config.py` or checkpoints.
 - Keep window sizes and shared loops inline in `Config.block_schedule`. A `Loop` contains ordinary block specs, never other loops. Tool training requires an identical schedule on resume; pretraining accepts changes with matching parameter names and shapes while preserving the bundle, batch size, and seed.
 - Use sandwich RMSNorm around the mixer and feed-forward branches: normalize branch inputs and updates, not the residual addition. Keep full backpropagation through shared-core passes.

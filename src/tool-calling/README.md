@@ -92,11 +92,12 @@ including during an existing delay, and last until you close the dashboard.
 `PretrainConfig.step_delay_seconds` in [`config.py`](src/tool_calling/config.py)
 sets the initial dashboard value and the headless delay. The default is `0.0`.
 
-The worker idles after each completed optimizer update and each validation
-batch. Reported training tokens/s includes the delay after updates but
-excludes validation time. Checkpoint compatibility, learning-rate schedule,
-and validation cadence in steps are unchanged. This spaces out GPU work
-without capping power during individual batches or slowing previews.
+The worker idles after each completed optimizer update. Each forward-only
+validation batch uses one third of the same live delay. Reported training
+tokens/s includes update delays but excludes validation time. Checkpoint
+compatibility, learning-rate schedule, and validation cadence in steps are
+unchanged. This spaces out GPU work without capping power during individual
+batches or slowing previews.
 
 ### Run without the dashboard
 

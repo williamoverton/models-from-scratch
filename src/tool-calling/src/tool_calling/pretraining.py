@@ -433,15 +433,18 @@ def _loss(model: LanguageModel, batch: tuple[torch.Tensor, torch.Tensor],
                            ignore_index=_IGNORE_TARGET, reduction=reduction)
 
 
-def _pace(stop_event: Event, step_delay: Callable[[], float]) -> float:
+_VALIDATION_DELAY_SCALE = 1 / 3
+
+
+def _pace(stop_event: Event, step_delay: Callable[[], float], *, scale: float = 1.0) -> float:
     """Idle after a unit of GPU work; return the end time for throughput accounting."""
     completed_at = finished_at = perf_counter()
-    remaining = step_delay()
+    remaining = step_delay() * scale
     # Re-read live edits during short sleeps without taking the headless signal handler's event lock.
     while remaining > 0 and not stop_event.is_set():
         sleep(min(remaining, 0.1))
         finished_at = perf_counter()
-        remaining = step_delay() - (finished_at - completed_at)
+        remaining = step_delay() * scale - (finished_at - completed_at)
     return finished_at
 
 
@@ -465,7 +468,8 @@ def _validate(model: LanguageModel, validation: dict[str, _Split], config: Confi
                 with autocast():
                     total += _loss(model, batch, "sum").item()
                 del batch
-                _pace(stop_event, step_delay)
+                # Validation runs only the forward pass, so the full update delay over-throttles it.
+                _pace(stop_event, step_delay, scale=_VALIDATION_DELAY_SCALE)
             if not isfinite(total):
                 raise FloatingPointError(f"Non-finite {source} validation loss.")
             losses[source] = total / (sample_size * config.context_length)
@@ -560,7 +564,8 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
              config.pretrain_decay_end_tokens)
     initial_delay = step_delay()
     if initial_delay:
-        log.info("Pretraining slowdown: %g seconds of idle time after each update and validation batch.", initial_delay)
+        log.info("Pretraining slowdown: %g seconds after each update, %g after each validation batch.",
+                 initial_delay, initial_delay * _VALIDATION_DELAY_SCALE)
 
     def validate_if_due() -> dict[str, float]:
         """Retry a due validation on resume if Stop interrupted it before completion."""
