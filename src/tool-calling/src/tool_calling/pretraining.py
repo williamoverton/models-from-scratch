@@ -31,8 +31,33 @@ _LATEST = "pretrain-latest.pt"
 _BEST = "pretrain-best.pt"
 _CHECKPOINT_FORMAT = "llm-from-scratch/tool-calling-pretrain"
 _OPTIMIZER = "fused-adamw"
-_SOURCES = ("wikipedia", "qa")
-_MIX = ("wikipedia",) * 9 + ("qa",)
+_SOURCES = ("wikipedia", "qa", "fineweb", "arxiv", "youtube")
+_FINEWEB_MIX = ("wikipedia", "wikipedia", "wikipedia", "fineweb", "wikipedia",
+                "wikipedia", "wikipedia", "fineweb", "wikipedia", "qa")
+_ARXIV_MIX = (
+    "wikipedia", "fineweb", "arxiv", "wikipedia", "fineweb",
+    "qa", "wikipedia", "fineweb", "arxiv", "wikipedia",
+    "fineweb", "arxiv", "wikipedia", "fineweb", "qa",
+    "wikipedia", "fineweb", "arxiv", "wikipedia", "fineweb",
+)
+# One 1,000-update cycle, apportioned by packed training tokens.
+_MIX_COUNTS = {"wikipedia": 364, "qa": 36, "fineweb": 289, "arxiv": 165, "youtube": 146}
+
+
+def _make_mix() -> tuple[tuple[str, ...], tuple[int, ...]]:
+    """Space each source's updates across the cycle by largest scheduling deficit."""
+    total = sum(_MIX_COUNTS.values())
+    used = dict.fromkeys(_SOURCES, 0)
+    mix, offsets = [], []
+    for step in range(1, total + 1):
+        source = max(_SOURCES, key=lambda name: step * _MIX_COUNTS[name] - total * used[name])
+        mix.append(source)
+        offsets.append(used[source])
+        used[source] += 1
+    return tuple(mix), tuple(offsets)
+
+
+_MIX, _MIX_OFFSETS = _make_mix()
 _TOKEN_DTYPE = np.dtype("<u2")
 _IGNORE_TARGET = -100
 
@@ -94,6 +119,9 @@ class _Split:
 class _Bundle:
     tokenizer: Tokenizer
     manifest_sha256: str
+    base_manifest_sha256: str
+    fineweb_manifest_sha256: str
+    arxiv_manifest_sha256: str
     tokenizer_sha256: str
     train: dict[str, _Split]
     validation: dict[str, _Split]
@@ -121,9 +149,11 @@ def _map_shard(path: Path, rows: int, width: int, digest: str, vocab_size: int,
         return np.memmap(stream, dtype=_TOKEN_DTYPE, mode="r", shape=(rows, width))
 
 
-def _load_bundle(data_dir: Path, stop_event: Event, *, context_length: int, verify_shards: bool) -> _Bundle | None:
-    """Validate the stored layout and expose windows of the configured model length."""
-    data_dir = data_dir.resolve()
+def _load_bundle(data_dir: Path, fineweb_dir: Path, arxiv_dir: Path, youtube_dir: Path,
+                 stop_event: Event, *, context_length: int, verify_shards: bool) -> _Bundle | None:
+    """Combine matching Wikipedia/Q&A, FineWeb, arXiv and YouTube packs."""
+    data_dir, fineweb_dir, arxiv_dir, youtube_dir = (
+        path.resolve() for path in (data_dir, fineweb_dir, arxiv_dir, youtube_dir))
     manifest_path = data_dir / "manifest.json"
     try:
         manifest_bytes = manifest_path.read_bytes()
@@ -152,11 +182,32 @@ def _load_bundle(data_dir: Path, stop_event: Event, *, context_length: int, veri
         if vocab_size > np.iinfo(_TOKEN_DTYPE).max + 1:
             raise ValueError("Tokenizer vocabulary does not fit in uint16 shards.")
         sources = manifest["sources"]
-        if not isinstance(sources, dict) or set(sources) != set(_SOURCES):
-            raise ValueError("Expected exactly the wikipedia and qa sources.")
+        if not isinstance(sources, dict) or set(sources) != {"wikipedia", "qa"}:
+            raise ValueError("Expected exactly the wikipedia and qa sources in the base bundle.")
+        roots = {"wikipedia": data_dir, "qa": data_dir, "fineweb": fineweb_dir,
+                 "arxiv": arxiv_dir, "youtube": youtube_dir}
+        base_digest = sha256(manifest_bytes)
+        identity = base_digest.digest()
+        identities = {}
+        for source in ("fineweb", "arxiv", "youtube"):
+            root = roots[source]
+            extra_bytes = (root / "manifest.json").read_bytes()
+            extra = json.loads(extra_bytes)
+            for field in ("format", "version", "context_length", "tokenizer_sha256", "end_of_document_id"):
+                if not isinstance(extra, dict) or extra.get(field) != manifest[field]:
+                    raise ValueError(f"{source} manifest at {root} differs on {field}.")
+            with (root / "tokenizer.json").open("rb") as stream:
+                if file_digest(stream, "sha256").hexdigest() != tokenizer_hash:
+                    raise ValueError(f"{source} tokenizer at {root} does not match the base bundle.")
+            if not isinstance(extra["sources"], dict) or set(extra["sources"]) != {source}:
+                raise ValueError(f"Expected exactly the {source} source in {root}.")
+            sources[source] = extra["sources"][source]
+            identity += sha256(extra_bytes).digest()
+            identities[source] = sha256(identity).hexdigest()
         splits: dict[str, dict[str, _Split]] = {"train": {}, "validation": {}}
         seen: set[Path] = set()
         for source in _SOURCES:
+            root = roots[source]
             for split, by_source in splits.items():
                 entries = sources[source][split]
                 if not isinstance(entries, list) or not entries:
@@ -167,9 +218,9 @@ def _load_bundle(data_dir: Path, stop_event: Event, *, context_length: int, veri
                         return None
                     name, rows, digest = entry["file"], entry["rows"], entry["sha256"]
                     relative = Path(name)
-                    path = (data_dir / relative).resolve()
-                    if (relative.is_absolute() or ".." in relative.parts or not path.is_relative_to(data_dir)
-                            or path in seen or path in (manifest_path, tokenizer_path)):
+                    path = (root / relative).resolve()
+                    if (relative.is_absolute() or ".." in relative.parts or not path.is_relative_to(root)
+                            or path in seen or path.name in ("manifest.json", "tokenizer.json")):
                         raise ValueError(f"Invalid or repeated shard path: {name}.")
                     if type(rows) is not int or rows < 1 or not isinstance(digest, str):
                         raise ValueError(f"Invalid shard metadata for {name}.")
@@ -180,10 +231,11 @@ def _load_bundle(data_dir: Path, stop_event: Event, *, context_length: int, veri
                     seen.add(path)
                     shards.append(shard)
                 by_source[source] = _Split(shards, context_length)
-        return _Bundle(tokenizer, sha256(manifest_bytes).hexdigest(), tokenizer_hash,
+        return _Bundle(tokenizer, identities["youtube"], base_digest.hexdigest(),
+                       identities["fineweb"], identities["arxiv"], tokenizer_hash,
                        splits["train"], splits["validation"])
     except (OSError, ValueError, KeyError, TypeError) as error:
-        raise ValueError(f"Invalid pretraining bundle at {manifest_path}: {error}") from error
+        raise ValueError(f"Invalid pretraining data ({data_dir}, {fineweb_dir}, {arxiv_dir}, {youtube_dir}): {error}") from error
 
 
 class _ShuffledRows:
@@ -223,10 +275,6 @@ class _Progress:
     best_loss: float | None = None
     last_loss: float = 0.0
 
-    def source_batches(self) -> dict[str, int]:
-        """Recover source counts, and hence each absolute row cursor, from the step."""
-        qa = self.step // len(_MIX)
-        return {"wikipedia": self.step - qa, "qa": qa}
 
 
 def _atomic_save(path: Path, payload: dict) -> None:
@@ -272,9 +320,59 @@ def _learning_rate(config: Config, update_tokens: int) -> float:
     ) / 2
 
 
-def _restore(path: Path, metadata: dict, model: LanguageModel, optimizer: torch.optim.AdamW,
-             scaler: torch.amp.GradScaler, device: torch.device) -> tuple[_Progress, dict] | None:
-    """Restore current-format training state; never silently replace an invalid run."""
+def _checkpoint_mix(metadata: dict, bundle: _Bundle) -> str:
+    """Recognize only the current mix or exact known predecessor bundles."""
+    identity, mix = metadata["manifest_sha256"], metadata.get("mix")
+    if identity == bundle.manifest_sha256 and mix == _MIX:
+        return "current"
+    if identity == bundle.arxiv_manifest_sha256 and mix == _ARXIV_MIX:
+        return "arxiv"
+    if identity == bundle.fineweb_manifest_sha256 and mix == _FINEWEB_MIX:
+        return "fineweb"
+    if identity == bundle.base_manifest_sha256 and "mix" not in metadata:
+        return "wiki-qa"
+    raise ValueError("Cannot resume after changing the prepared bundles or source mix.")
+
+
+def _mix_cursor(previous: dict, bundle: _Bundle, step: int) -> tuple[int, dict[str, int]]:
+    """Recover batch offsets at the start of the current schedule."""
+    mix = _checkpoint_mix(previous, bundle)
+    if mix in ("current", "arxiv"):
+        start, offsets = previous["mix_start_step"], previous["mix_offsets"]
+        sources = _SOURCES if mix == "current" else _SOURCES[:-1]
+        if (type(start) is not int or not 0 <= start <= step or not isinstance(offsets, dict)
+                or set(offsets) != set(sources)
+                or any(type(count) is not int or count < 0 for count in offsets.values())
+                or sum(offsets.values()) != start):
+            raise ValueError("Invalid pretraining mix cursor.")
+        if mix == "current":
+            return start, offsets
+        offsets = {**offsets, "youtube": 0}
+        previous_mix = _ARXIV_MIX
+    else:
+        start = previous["mix_start_step"] if mix == "fineweb" else step
+        if type(start) is not int or not 0 <= start <= step:
+            raise ValueError("Invalid pretraining mix start step.")
+        qa = start // 10
+        offsets = {"wikipedia": start - qa, "qa": qa, "fineweb": 0, "arxiv": 0, "youtube": 0}
+        previous_mix = _FINEWEB_MIX
+    cycles, tail = divmod(step - start, len(previous_mix))
+    for source in offsets:
+        offsets[source] += cycles * previous_mix.count(source) + previous_mix[:tail].count(source)
+    return step, offsets
+
+
+def _source_batch(step: int, mix_start_step: int, offsets: dict[str, int]) -> tuple[str, int]:
+    """Return the source and its next batch index, including pre-cutover batches."""
+    cycles, slot = divmod(step - mix_start_step, len(_MIX))
+    source = _MIX[slot]
+    return source, offsets[source] + cycles * _MIX_COUNTS[source] + _MIX_OFFSETS[slot]
+
+
+def _restore(path: Path, metadata: dict, bundle: _Bundle, model: LanguageModel,
+             optimizer: torch.optim.AdamW, scaler: torch.amp.GradScaler,
+             device: torch.device) -> tuple[_Progress, dict] | None:
+    """Restore training state and preserve cursors across known mix changes."""
     try:
         try:
             mode = path.lstat().st_mode
@@ -286,9 +384,10 @@ def _restore(path: Path, metadata: dict, model: LanguageModel, optimizer: torch.
         previous = saved["metadata"]
         if saved["kind"] != "latest" or any(
             previous[key] != metadata[key]
-            for key in ("format", "version", "manifest_sha256", "tokenizer_sha256", "vocab_size")
+            for key in ("format", "version", "tokenizer_sha256", "vocab_size")
         ):
             raise ValueError("Checkpoint format or prepared bundle differs.")
+        migrated = _checkpoint_mix(previous, bundle) != "current"
         if previous.get("optimizer") != _OPTIMIZER:
             raise ValueError("Checkpoint does not use fused AdamW; set PretrainConfig.init_from to load weights only.")
         if previous["settings"]["context_length"] != metadata["settings"]["context_length"]:
@@ -310,6 +409,11 @@ def _restore(path: Path, metadata: dict, model: LanguageModel, optimizer: torch.
                 or (progress.best_loss is not None and not isfinite(progress.best_loss))
                 or not isfinite(progress.last_loss)):
             raise ValueError("Invalid checkpoint counters or loss.")
+        metadata["mix_start_step"], metadata["mix_offsets"] = _mix_cursor(previous, bundle, progress.step)
+        if migrated:
+            # The old weighted validation loss is not comparable.
+            progress.best_step = 0
+            progress.best_loss = None
         model.load_state_dict(saved["model"], strict=True)
         optimizer.load_state_dict(saved["optimizer"])
         scaler.load_state_dict(saved["scaler"])
@@ -376,6 +480,7 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
            init_from: Path | None, generation_request: Event | None, step_delay: Callable[[], float]) -> None:
     """Keep the mix, data cursors, validation cadence, and best record stable across resumes."""
     settings = asdict(config)
+    del settings["sample_temperature"]  # Preview-only; not part of the training state.
     # Keep the on-disk name for the LR endpoint so saved runs resume unchanged.
     settings["pretrain_token_budget"] = settings.pop("pretrain_decay_end_tokens")
     metadata = {
@@ -384,6 +489,9 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
         "optimizer": _OPTIMIZER,
         "settings": settings,
         "manifest_sha256": bundle.manifest_sha256,
+        "mix": _MIX,
+        "mix_start_step": 0,
+        "mix_offsets": dict.fromkeys(_SOURCES, 0),
         "tokenizer_sha256": bundle.tokenizer_sha256,
         "vocab_size": bundle.tokenizer.vocab_size,
     }
@@ -395,7 +503,7 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
     best_path = run_dir / _BEST
     if init_from is not None and any(path.exists() or path.is_symlink() for path in (latest_path, best_path)):
         raise ValueError("PretrainConfig.init_from requires a run directory without checkpoints; set it to None to resume.")
-    restored = _restore(latest_path, metadata, model, optimizer, scaler, device)
+    restored = _restore(latest_path, metadata, bundle, model, optimizer, scaler, device)
 
     def save_best(weights_metadata: dict) -> None:
         """Publish fine-tunable weights with their architecture and tokenizer identities."""
@@ -416,12 +524,17 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
             log.info("Starting pretraining from scratch.")
     else:
         progress, previous_metadata = restored
+        if _checkpoint_mix(previous_metadata, bundle) != "current":
+            log.info("Changing the source mix after completed update %s; resetting the best validation loss.",
+                     progress.step)
         # Latest is published first. If interrupted before publishing best, latest still
         # contains those exact weights until the run is able to continue.
         if progress.best_step and progress.best_step == progress.step:
             save_best(previous_metadata)
         log.info("Resuming pretraining at completed update %s.", progress.step)
     report(TrainingStarted(progress.step))
+    mix_start_step = metadata["mix_start_step"]
+    mix_offsets = metadata["mix_offsets"]
 
     saved = asdict(progress)
 
@@ -439,6 +552,8 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
 
     tokens_per_step = config.batch_size * config.context_length
     citation_filter = WikipediaCitationFilter(bundle.tokenizer)
+    log.info("Training mix: %s.", ", ".join(
+        f"{source} {100 * count / len(_MIX):.1f}%" for source, count in _MIX_COUNTS.items()))
     log.info("Filtering numeric citations from Wikipedia training windows; validation is unchanged.")
     log.info("Pretraining runs until stopped; warmup: %s tokens, peak LR %g, floor %g from %s tokens.",
              config.pretrain_warmup_tokens, config.pretrain_peak_lr, config.pretrain_final_lr,
@@ -450,16 +565,17 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
     def validate_if_due() -> dict[str, float]:
         """Retry a due validation on resume if Stop interrupted it before completion."""
         step = progress.step
-        if (step <= progress.validated_step or (step != 1 and step % config.eval_interval)
+        if (step <= max(progress.validated_step, mix_start_step)
+                or (step != mix_start_step + 1 and step % config.eval_interval)
                 or stop_event.is_set()):
             return {}
         losses = _validate(model, bundle.validation, config, device, stop_event, step_delay)
         if losses is None:
             return {}
-        weighted = sum(losses[source] for source in _MIX) / len(_MIX)
+        weighted = sum(losses[source] * count for source, count in _MIX_COUNTS.items()) / len(_MIX)
         progress.validated_step = step
-        log.info("Step %s validation loss %.4f (Wikipedia %.4f, Q&A %.4f)",
-                 step, weighted, losses["wikipedia"], losses["qa"])
+        log.info("Step %s validation loss %.4f (%s)", step, weighted,
+                 ", ".join(f"{source} {loss:.4f}" for source, loss in losses.items()))
         if progress.best_loss is None or weighted < progress.best_loss:
             progress.best_loss = weighted
             progress.best_step = step
@@ -481,8 +597,8 @@ def _train(report: ProgressCallback, stop_event: Event, *, log: Logger, run_dir:
     validation_metrics = {}
     while not stop_event.is_set():
         started = perf_counter()
-        source = _MIX[progress.step % len(_MIX)]
-        cursor = progress.source_batches()[source] * config.batch_size
+        source, source_batch = _source_batch(progress.step, mix_start_step, mix_offsets)
+        cursor = source_batch * config.batch_size
         rows = samplers[source].take(cursor, config.batch_size)
         batch = bundle.train[source].batch(rows, device, citation_filter if source == "wikipedia" else None)
         learning_rate = _learning_rate(config, (progress.step + 1) * tokens_per_step)
@@ -568,7 +684,8 @@ def _report_training(report: ProgressCallback, log: Logger, progress: _Progress,
     }))
 
 
-def generate_pretraining_example(prompt: str, *, data_dir: Path, run_dir: Path) -> TextGenerationPreview:
+def generate_pretraining_example(prompt: str, *, data_dir: Path, fineweb_dir: Path, arxiv_dir: Path,
+                                 youtube_dir: Path, run_dir: Path) -> TextGenerationPreview:
     """Sample from the latest committed pretraining weights without changing the run."""
     path = run_dir / _LATEST
     if not path.is_file():
@@ -578,13 +695,15 @@ def generate_pretraining_example(prompt: str, *, data_dir: Path, run_dir: Path) 
     device = torch.device("cuda", torch.cuda.current_device())
     stop = Event()
     config = Config()
-    bundle = _load_bundle(data_dir, stop, context_length=config.context_length, verify_shards=False)
+    bundle = _load_bundle(data_dir, fineweb_dir, arxiv_dir, youtube_dir, stop, context_length=config.context_length,
+                          verify_shards=False)
     assert bundle is not None  # This display-only operation has no stop request.
     saved = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
     metadata = saved["metadata"]
     if (saved["kind"] != "latest" or metadata["format"] != _CHECKPOINT_FORMAT
-            or metadata["version"] != 1 or metadata["manifest_sha256"] != bundle.manifest_sha256):
+            or metadata["version"] != 1 or metadata["tokenizer_sha256"] != bundle.tokenizer_sha256):
         raise ValueError(f"Checkpoint format or prepared bundle differs at {path}.")
+    _checkpoint_mix(metadata, bundle)
     if metadata["settings"]["context_length"] != config.context_length:
         raise ValueError(f"Checkpoint context differs from Config.context_length at {path}.")
     model = LanguageModel(bundle.tokenizer.vocab_size, config).to(device)
@@ -596,8 +715,8 @@ def generate_pretraining_example(prompt: str, *, data_dir: Path, run_dir: Path) 
     return preview
 
 
-def run_pretraining(report: ProgressCallback, stop_event: Event, *, data_dir: Path,
-                    run_dir: Path, log: Logger, sample_prompt: Callable[[], str],
+def run_pretraining(report: ProgressCallback, stop_event: Event, *, data_dir: Path, fineweb_dir: Path,
+                    arxiv_dir: Path, youtube_dir: Path, run_dir: Path, log: Logger, sample_prompt: Callable[[], str],
                     step_delay: Callable[[], float],
                     verify_shards: bool = False, init_from: Path | None = None,
                     generation_request: Event | None = None) -> None:
@@ -611,10 +730,11 @@ def run_pretraining(report: ProgressCallback, stop_event: Event, *, data_dir: Pa
         raise RuntimeError("Tool-calling pretraining requires CUDA.")
     device = torch.device("cuda", torch.cuda.current_device())
     with lock_run(run_dir):
-        log.info("Opening pretraining data: %s (full shard verification %s)",
-                 data_dir, "on" if verify_shards else "off")
+        log.info("Opening pretraining data: %s, %s, %s and %s (full shard verification %s)",
+                 data_dir, fineweb_dir, arxiv_dir, youtube_dir, "on" if verify_shards else "off")
         config = Config()
-        bundle = _load_bundle(data_dir, stop_event, context_length=config.context_length, verify_shards=verify_shards)
+        bundle = _load_bundle(data_dir, fineweb_dir, arxiv_dir, youtube_dir, stop_event, context_length=config.context_length,
+                              verify_shards=verify_shards)
         if bundle is None or stop_event.is_set():
             return
         torch.manual_seed(config.seed)

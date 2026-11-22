@@ -13,7 +13,6 @@ from .precision import autocast
 SAMPLE_INTERVAL = 500
 _SAMPLE_SEED = 42
 _SAMPLE_TOKENS = 128
-_SAMPLE_TEMPERATURE = 0.95
 _SAMPLE = {
     "tools": [{
         "name": "lookup_api_endpoint",
@@ -50,7 +49,7 @@ def _sample_tokens(model, prefix: list[int], terminators: set[int], config: Conf
             logits = model(ids[:, :position])[:, -1, :].float()
         if not torch.isfinite(logits).all().item():
             raise FloatingPointError("Non-finite logits while generating the fixed examples.")
-        probabilities = torch.softmax(logits / _SAMPLE_TEMPERATURE, dim=-1)
+        probabilities = torch.softmax(logits / config.sample_temperature, dim=-1)
         token = torch.multinomial(probabilities, 1, generator=generator)
         token_id = token.item()
         generated.append(token_id)

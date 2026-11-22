@@ -1,6 +1,7 @@
 """Settings for the hybrid convolution/attention tool-calling model."""
 
 from dataclasses import dataclass
+from math import isfinite
 from pathlib import Path
 from typing import Literal
 
@@ -10,9 +11,12 @@ class PretrainConfig:
     """Launch settings for pretraining from the workspace root."""
 
     data_dir: Path = Path("/mnt/StorageBox/datasets/pretrain-wiki-qa-8k-ctx1024")
+    fineweb_dir: Path = Path("/mnt/StorageBox/datasets/pretrain-fineweb-8k-ctx1024")
+    arxiv_dir: Path = Path("/mnt/StorageBox/datasets/pretrain-arxiv-8k-ctx1024")
+    youtube_dir: Path = Path("/mnt/StorageBox/datasets/pretrain-youtube-8k-ctx1024")
     run_dir: Path = Path("trained-models/tool-calling/runs/pretrain-wiki-qa-8k-2loops")
     init_from: Path | None = None
-    sample_prompt: str = "Training an LLM is"
+    sample_prompt: str = "Nottinghamshire is located in the center of"
     verify_shards: bool = False
     headless: bool = False
     step_delay_seconds: float = 0.0
@@ -67,8 +71,11 @@ class Config:
     eval_interval: int = 100
     eval_batches: int = 10
     checkpoint_interval: int = 200
+    sample_temperature: float = 0.95
 
     def __post_init__(self) -> None:
-        """Require a positive number of input positions."""
+        """Validate the input length and preview temperature."""
         if type(self.context_length) is not int or self.context_length < 1:
             raise ValueError("Config.context_length must be a positive integer.")
+        if not isfinite(self.sample_temperature) or self.sample_temperature <= 0:
+            raise ValueError("Config.sample_temperature must be finite and positive.")

@@ -36,7 +36,7 @@ def resume_settings(settings: dict) -> dict:
     """Keep tool-training settings that affect optimizer updates."""
     return {
         name: value for name, value in settings.items()
-        if name not in ("eval_interval", "eval_batches", "checkpoint_interval")
+        if name not in ("eval_interval", "eval_batches", "checkpoint_interval", "sample_temperature")
         and not name.startswith("pretrain_")
     }
 
