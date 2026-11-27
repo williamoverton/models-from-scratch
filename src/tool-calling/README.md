@@ -155,8 +155,10 @@ backpropagation and logs the first non-finite operation it can observe,
 including its module and loop pass. It still stops without applying the update.
 
 The **Generated examples** panel samples after the first completed update of
-each session and every 500 updates. Press **E** to edit the prompt, **Enter**
-to apply it and immediately request a preview, or **Esc** to cancel.
+each session and every 500 updates. Press **E** to edit the prompt and
+**Enter** to insert a newline. Click **Generate** or press **Tab** then
+**Enter** to apply the prompt and request a preview; **Esc** cancels.
+The preview shows the prompt in muted text and the continuation in the accent color.
 Press **G** to draw a fresh sample without changing the prompt. While training,
 requests run at a completed update; while idle, they use the latest checkpoint
 without starting training or writing a checkpoint.

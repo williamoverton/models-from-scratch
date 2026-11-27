@@ -1,4 +1,5 @@
 from textual.app import ComposeResult
+from textual.content import Content
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Static
 from textual_image.widget import Image
@@ -54,12 +55,18 @@ class TextGenerationPanel(Static):
 
     def show_preview(self, preview: TextGenerationPreview) -> None:
         """Replace the snapshot with its producing step and labeled text."""
-        sections = [f"Sample step {preview.step:,}"]
+        sections = [Content(f"Sample step {preview.step:,}")]
         sections.extend(
-            f"{example.label}\n{example.context}\n{example.completion}"
+            Content.assemble(
+                example.label,
+                "\n",
+                Content(example.context).stylize("$text-muted"),
+                "\n",
+                Content(example.completion).stylize("$accent"),
+            )
             for example in preview.examples
         )
-        self.update("\n\n".join(sections))
+        self.update(Content("\n\n").join(sections))
 
     def reset_preview(self) -> None:
         """Clear the snapshot before starting another run."""

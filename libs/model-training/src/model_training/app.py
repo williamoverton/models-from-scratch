@@ -1,4 +1,5 @@
 import logging
+import os
 import sys
 import termios
 from collections.abc import Callable
@@ -7,12 +8,14 @@ from pathlib import Path
 from threading import Event
 from typing import Literal
 
-from textual import work
+from textual import constants, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.worker import WorkerCancelled, get_current_worker
-from textual.widgets import Footer, Header, Input, RichLog, Static, TabbedContent, TabPane
+from textual.widgets import (
+    Button, Footer, Header, Input, RichLog, Static, TabbedContent, TabPane, TextArea,
+)
 from textual_plotext import PlotextPlot
 
 from model_training.history import MetricsHistory
@@ -37,10 +40,11 @@ class _PromptEditor(ModalScreen[str | None]):
     """Submit a nonblank preview prompt or cancel with Escape."""
 
     BINDINGS = [("escape", "dismiss", "Cancel")]
-    AUTO_FOCUS = "Input"
+    AUTO_FOCUS = "TextArea"
     DEFAULT_CSS = """
     _PromptEditor { align: center middle; }
-    _PromptEditor Vertical { width: 80%; height: auto; }
+    _PromptEditor Vertical { width: 80%; height: 65%; }
+    _PromptEditor TextArea { height: 1fr; }
     """
 
     def __init__(self, prompt: str):
@@ -50,13 +54,17 @@ class _PromptEditor(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         """Show the current prompt in a focused editor."""
         with Vertical(classes="panel"):
-            yield Static("Generation prompt · Enter to generate · Esc to cancel")
-            yield Input(self.prompt, placeholder="Enter a prompt")
+            yield Static(
+                "Generation prompt · Enter for a new line · Tab to Generate · Esc to cancel"
+            )
+            yield TextArea(self.prompt, placeholder="Enter a prompt")
+            yield Button("Generate", variant="primary")
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Apply the edit only when there is text to generate from."""
-        if event.value.strip():
-            self.dismiss(event.value)
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Submit the editor text unchanged unless it is all whitespace."""
+        prompt = self.query_one(TextArea).text
+        if prompt.strip():
+            self.dismiss(prompt)
 
 
 class _StepDelayEditor(ModalScreen[float | None]):
@@ -144,7 +152,7 @@ class TrainingApp(App):
         self.log_handler = SegmentLogHandler(log_path)
 
     def run(self, **kwargs) -> None:
-        """Run the dashboard and restore the terminal's original input modes."""
+        """Run with compatible keyboard handling and restore the terminal modes."""
         terminal = sys.__stdin__
         terminal_fd = (
             terminal.fileno()
@@ -154,10 +162,22 @@ class TrainingApp(App):
         original_mode = (
             termios.tcgetattr(terminal_fd) if terminal_fd is not None else None
         )
+        disable_kitty_key = constants.DISABLE_KITTY_KEY
+        use_legacy_keys = (
+            terminal_fd is not None
+            and os.environ.get("TERM_PROGRAM") == "Orca"
+            and "TEXTUAL_DISABLE_KITTY_KEY" not in os.environ
+        )
 
         try:
+            if use_legacy_keys:
+                # Orca can leave shell keys in extended mode after Q.
+                # Textual reads its environment switch at import time.
+                setattr(constants, "DISABLE_KITTY_KEY", True)
             super().run(**kwargs)
         finally:
+            if use_legacy_keys:
+                setattr(constants, "DISABLE_KITTY_KEY", disable_kitty_key)
             # Restore echo, line buffering, and Enter handling after UI cleanup.
             if terminal_fd is not None:
                 termios.tcsetattr(terminal_fd, termios.TCSANOW, original_mode)

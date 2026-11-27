@@ -20,11 +20,13 @@ Call `app.run()`. Use **S** to start, **X** to request a cooperative stop, and
 **Q** to stop and quit. The training function should check `stop_event` and
 perform any necessary cleanup before returning.
 
-For interactive text previews, **E** opens the editor and **Enter** applies
-the prompt and requests a new preview. **G** requests another preview with
-the current prompt. While training, the worker consumes `generation_request`
-and reads `app.generation_prompt` at a safe update boundary. While idle, the
-dashboard calls `generate_text(prompt)` on its generation worker.
+For interactive text previews, **E** opens the multiline editor. **Enter**
+inserts a newline. Click **Generate** or press **Tab** then **Enter** to apply
+the prompt and request a preview; **Esc** cancels. **G** requests another
+preview with the current prompt. While training, the worker consumes
+`generation_request` and reads `app.generation_prompt` at a safe update
+boundary. While idle, the dashboard calls `generate_text(prompt)` on its
+generation worker.
 
 Launchers can pass `step_delay_seconds` to enable **D** (**Step delay**).
 `None` (the default) hides the control; `0.0` enables it with no delay.
@@ -104,5 +106,7 @@ Use `metrics={}` for a preview-only report. It replaces the preview without
 altering the step, metrics, or loss chart. A report can also carry both metrics
 and a preview. Text labels, context, and completions render literally and wrap
 at the panel width; markup and control markers are not interpreted as actions.
+The included prompt uses the theme's muted text color; the generated
+continuation uses its accent color.
 The text panel waits for its first snapshot, keeps the latest one through metric
 updates and Stop, and returns to the waiting state when Start begins another run.
