@@ -28,16 +28,19 @@ dependency. The Q&A reader accepts gzip JSONL shards from the linked
 [Stack Exchange dataset](https://huggingface.co/datasets/flax-sentence-embeddings/stackexchange_title_best_voted_answer_jsonl).
 The downloaded snapshot is revision `88957a0e825f49aeb2a7bfd828cb46b79010b286`.
 
-The default run uses five frozen 1,024-token bundles in `/mnt/StorageBox/datasets`:
+The default run uses six frozen 1,024-token bundles in `/mnt/StorageBox/datasets`:
 `pretrain-wiki-qa-8k-ctx1024` for Wikipedia and Q&A,
 `pretrain-fineweb-8k-ctx1024` for [FineWeb `sample-10BT`](https://huggingface.co/datasets/HuggingFaceFW/fineweb/viewer/sample-10BT),
 `pretrain-arxiv-8k-ctx1024` for [arXiv Papers](https://huggingface.co/datasets/common-pile/arxiv_papers),
 `pretrain-youtube-8k-ctx1024` for [YouTube Commons](https://huggingface.co/datasets/common-pile/youtube),
-and `pretrain-primeintellect-math-8k-ctx1024` for
-[PrimeIntellect Verifiable Math Problems](https://huggingface.co/datasets/PrimeIntellect/verifiable-math-problems/tree/2ad7c92aaa5efa5a4a8c74e43d57b432529f339b).
-All five use the same 8K tokenizer. The PrimeIntellect bundle uses the full
-snapshot, including its Orca Math examples. The standalone Orca Math bundle
-is no longer used. The preparation command below only builds the
+`pretrain-primeintellect-math-8k-ctx1024` for
+[PrimeIntellect Verifiable Math Problems](https://huggingface.co/datasets/PrimeIntellect/verifiable-math-problems/tree/2ad7c92aaa5efa5a4a8c74e43d57b432529f339b),
+and `pretrain-swallow-math-8k-ctx1024` for
+[SwallowMath](https://huggingface.co/datasets/tokyotech-llm/swallow-math/tree/014870710de3c5c70e75a61f7c4946185799f958)
+(about 6.68 billion packed target tokens; Llama 3.3 Community License and
+Common Crawl terms). All six use the same 8K tokenizer. The PrimeIntellect
+bundle uses the full snapshot, including its Orca Math examples. The standalone
+Orca Math bundle is no longer used. The command below only builds the
 Wikipedia/Q&A bundle; skip it if that bundle already exists.
 
 ```sh
@@ -52,7 +55,8 @@ uv run --locked tool-calling pretrain
 
 Run from the workspace root. `PretrainConfig` in
 [`config.py`](src/tool_calling/config.py) selects the prepared bundles
-(`data_dir`, `fineweb_dir`, `arxiv_dir`, `youtube_dir`, and `primeintellect_math_dir`),
+(`data_dir`, `fineweb_dir`, `arxiv_dir`, `youtube_dir`, `primeintellect_math_dir`,
+and `swallow_math_dir`),
 the run directory, and launch behavior.
 `pretrain` takes no training arguments.
 
@@ -118,9 +122,10 @@ exits with status 1; a cooperative stop exits with status 0.
 ### Checkpoints and previews
 
 In Textual, press **S** to start or resume, **X** to stop, or **Q** to stop and
-quit. Pretraining uses fused AdamW. Each 1,000-update cycle draws 361 updates
+quit. Pretraining uses fused AdamW. Each 1,000-update cycle draws 300 updates
 from Wikipedia, 287 from FineWeb, 165 from arXiv, 146 from YouTube Commons,
-36 from Stack Exchange Q&A, and 5 from PrimeIntellect Math (0.5%).
+61 from SwallowMath (6.1%), 36 from Stack Exchange Q&A, and 5 from PrimeIntellect
+Math (0.5%). The entire SwallowMath share comes from Wikipedia.
 Each update draws from one source. Validation reports each source separately
 and weights the combined loss by the same mix.
 Training runs until you stop it. The learning rate
@@ -147,16 +152,17 @@ This requires the same tokenizer and matching parameter names and shapes.
 Step, data cursor, validation history, optimizer state, and scaler start fresh.
 Once the new run has a checkpoint, set `PretrainConfig.init_from` back to `None` to resume it.
 
-To adopt the PrimeIntellect Math mix in an existing run, stop normally and
-relaunch with the same run directory and `init_from = None`. The trainer
-accepts checkpoints from the prior Orca Math, YouTube Commons, arXiv, FineWeb,
-and original Wikipedia/Q&A mixes when the bundles they share with the new
-mix are unchanged. Resume retains the optimizer, scaler, RNG state,
-completed step, learning-rate position, and cursors for sources still in
-the mix. PrimeIntellect starts at its first batch; the Orca cursor is retired
-and the old packed Orca bundle is not needed. The best weighted loss resets
-because the mixes are not comparable, and the first validation under the new
-mix replaces the old best checkpoint.
+To adopt the SwallowMath mix in an existing run, stop normally and relaunch
+with the same run directory and `init_from = None`. The trainer accepts
+checkpoints from the prior PrimeIntellect Math, Orca Math, YouTube Commons,
+arXiv, FineWeb, and original Wikipedia/Q&A mixes when their shared bundles
+are unchanged. Resume retains the optimizer, scaler, RNG state, completed
+step, learning-rate position, and cursors for sources still in the mix.
+SwallowMath starts at its first batch. If the checkpoint predates
+PrimeIntellect, it also starts at its first batch. The Orca cursor is
+retired and the old packed Orca bundle is not needed. The best weighted
+loss resets because the mixes are not comparable, and the first validation
+under the new mix replaces the old best checkpoint.
 
 On a non-finite training loss, pretraining replays the failed batch before
 backpropagation and logs the first non-finite operation it can observe,

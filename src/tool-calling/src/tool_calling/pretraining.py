@@ -31,7 +31,7 @@ _LATEST = "pretrain-latest.pt"
 _BEST = "pretrain-best.pt"
 _CHECKPOINT_FORMAT = "llm-from-scratch/tool-calling-pretrain"
 _OPTIMIZER = "fused-adamw"
-_SOURCES = ("wikipedia", "qa", "fineweb", "arxiv", "youtube", "primeintellect_math")
+_SOURCES = ("wikipedia", "qa", "fineweb", "arxiv", "youtube", "primeintellect_math", "swallow_math")
 _FINEWEB_MIX = ("wikipedia", "wikipedia", "wikipedia", "fineweb", "wikipedia",
                 "wikipedia", "wikipedia", "fineweb", "wikipedia", "qa")
 _ARXIV_MIX = (
@@ -44,7 +44,8 @@ _YOUTUBE_MIX_COUNTS = {"wikipedia": 364, "qa": 36, "fineweb": 289, "arxiv": 165,
 _ORCA_MIX_COUNTS = {**_YOUTUBE_MIX_COUNTS, "wikipedia": 363, "fineweb": 288, "orca_math": 2}
 # The retired pack's exact manifest identity allows resume without opening its files.
 _ORCA_MANIFEST_DIGEST = bytes.fromhex("25af56b19252ab1e7c0fd9b936423acc4b43aef5466d7563581e6d1d7061e8db")
-_MIX_COUNTS = {**_YOUTUBE_MIX_COUNTS, "wikipedia": 361, "fineweb": 287, "primeintellect_math": 5}
+_PRIMEINTELLECT_MIX_COUNTS = {**_YOUTUBE_MIX_COUNTS, "wikipedia": 361, "fineweb": 287, "primeintellect_math": 5}
+_MIX_COUNTS = {**_PRIMEINTELLECT_MIX_COUNTS, "wikipedia": 300, "swallow_math": 61}
 
 
 def _make_mix(counts: dict[str, int]) -> tuple[tuple[str, ...], tuple[int, ...]]:
@@ -62,6 +63,7 @@ def _make_mix(counts: dict[str, int]) -> tuple[tuple[str, ...], tuple[int, ...]]
 
 _YOUTUBE_MIX, _ = _make_mix(_YOUTUBE_MIX_COUNTS)
 _ORCA_MIX, _ = _make_mix(_ORCA_MIX_COUNTS)
+_PRIMEINTELLECT_MIX, _ = _make_mix(_PRIMEINTELLECT_MIX_COUNTS)
 _MIX, _MIX_OFFSETS = _make_mix(_MIX_COUNTS)
 _TOKEN_DTYPE = np.dtype("<u2")
 _IGNORE_TARGET = -100
@@ -129,6 +131,7 @@ class _Bundle:
     arxiv_manifest_sha256: str
     youtube_manifest_sha256: str
     orca_manifest_sha256: str
+    primeintellect_manifest_sha256: str
     tokenizer_sha256: str
     train: dict[str, _Split]
     validation: dict[str, _Split]
@@ -157,11 +160,11 @@ def _map_shard(path: Path, rows: int, width: int, digest: str, vocab_size: int,
 
 
 def _load_bundle(data_dir: Path, fineweb_dir: Path, arxiv_dir: Path, youtube_dir: Path,
-                 primeintellect_math_dir: Path, stop_event: Event, *, context_length: int,
-                 verify_shards: bool) -> _Bundle | None:
+                 primeintellect_math_dir: Path, swallow_math_dir: Path, stop_event: Event, *,
+                 context_length: int, verify_shards: bool) -> _Bundle | None:
     """Combine matching pretraining packs and retain their historical identities."""
-    data_dir, fineweb_dir, arxiv_dir, youtube_dir, primeintellect_math_dir = (
-        path.resolve() for path in (data_dir, fineweb_dir, arxiv_dir, youtube_dir, primeintellect_math_dir))
+    data_dir, fineweb_dir, arxiv_dir, youtube_dir, primeintellect_math_dir, swallow_math_dir = (
+        path.resolve() for path in (data_dir, fineweb_dir, arxiv_dir, youtube_dir, primeintellect_math_dir, swallow_math_dir))
     manifest_path = data_dir / "manifest.json"
     try:
         manifest_bytes = manifest_path.read_bytes()
@@ -193,7 +196,8 @@ def _load_bundle(data_dir: Path, fineweb_dir: Path, arxiv_dir: Path, youtube_dir
         if not isinstance(sources, dict) or set(sources) != {"wikipedia", "qa"}:
             raise ValueError("Expected exactly the wikipedia and qa sources in the base bundle.")
         roots = {"wikipedia": data_dir, "qa": data_dir, "fineweb": fineweb_dir,
-                 "arxiv": arxiv_dir, "youtube": youtube_dir, "primeintellect_math": primeintellect_math_dir}
+                 "arxiv": arxiv_dir, "youtube": youtube_dir, "primeintellect_math": primeintellect_math_dir,
+                 "swallow_math": swallow_math_dir}
         base_digest = sha256(manifest_bytes)
         identity = base_digest.digest()
         identities = {}
@@ -241,12 +245,13 @@ def _load_bundle(data_dir: Path, fineweb_dir: Path, arxiv_dir: Path, youtube_dir
                     seen.add(path)
                     shards.append(shard)
                 by_source[source] = _Split(shards, context_length)
-        return _Bundle(tokenizer, identities["primeintellect_math"], base_digest.hexdigest(),
+        return _Bundle(tokenizer, identities["swallow_math"], base_digest.hexdigest(),
                        identities["fineweb"], identities["arxiv"], identities["youtube"],
-                       orca_identity, tokenizer_hash, splits["train"], splits["validation"])
+                       orca_identity, identities["primeintellect_math"], tokenizer_hash,
+                       splits["train"], splits["validation"])
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise ValueError(f"Invalid pretraining data ({data_dir}, {fineweb_dir}, {arxiv_dir}, "
-                         f"{youtube_dir}, {primeintellect_math_dir}): {error}") from error
+                         f"{youtube_dir}, {primeintellect_math_dir}, {swallow_math_dir}): {error}") from error
 
 
 class _ShuffledRows:
@@ -336,6 +341,8 @@ def _checkpoint_mix(metadata: dict, bundle: _Bundle) -> str:
     identity, mix = metadata["manifest_sha256"], metadata.get("mix")
     if identity == bundle.manifest_sha256 and mix == _MIX:
         return "current"
+    if identity == bundle.primeintellect_manifest_sha256 and mix == _PRIMEINTELLECT_MIX:
+        return "primeintellect"
     if identity == bundle.orca_manifest_sha256 and mix == _ORCA_MIX:
         return "orca"
     if identity == bundle.youtube_manifest_sha256 and mix == _YOUTUBE_MIX:
@@ -352,16 +359,17 @@ def _checkpoint_mix(metadata: dict, bundle: _Bundle) -> str:
 def _mix_cursor(previous: dict, bundle: _Bundle, step: int) -> tuple[int, dict[str, int]]:
     """Recover batch offsets at the start of the current schedule."""
     mix = _checkpoint_mix(previous, bundle)
-    if mix in ("current", "orca", "youtube", "arxiv"):
+    if mix in ("current", "primeintellect", "orca", "youtube", "arxiv"):
         start, offsets = previous["mix_start_step"], previous["mix_offsets"]
-        previous_mix = {"current": _MIX, "orca": _ORCA_MIX, "youtube": _YOUTUBE_MIX, "arxiv": _ARXIV_MIX}[mix]
+        previous_mix = {"current": _MIX, "primeintellect": _PRIMEINTELLECT_MIX,
+                        "orca": _ORCA_MIX, "youtube": _YOUTUBE_MIX, "arxiv": _ARXIV_MIX}[mix]
         if (type(start) is not int or not 0 <= start <= step or not isinstance(offsets, dict)
                 or set(offsets) != set(previous_mix)
                 or any(type(count) is not int or count < 0 for count in offsets.values())):
             raise ValueError("Invalid pretraining mix cursor.")
-        # Current offsets omit updates spent on retired Orca batches before the cutover.
+        # Mixes after Orca's retirement may omit its historical updates from offsets.
         accounted = sum(offsets.values())
-        if accounted > start or (mix != "current" and accounted != start):
+        if accounted > start or (mix not in ("current", "primeintellect") and accounted != start):
             raise ValueError("Invalid pretraining mix cursor.")
         if mix == "current":
             return start, offsets
@@ -707,7 +715,7 @@ def _report_training(report: ProgressCallback, log: Logger, progress: _Progress,
 
 
 def generate_pretraining_example(prompt: str, *, data_dir: Path, fineweb_dir: Path, arxiv_dir: Path,
-                                 youtube_dir: Path, primeintellect_math_dir: Path,
+                                 youtube_dir: Path, primeintellect_math_dir: Path, swallow_math_dir: Path,
                                  run_dir: Path) -> TextGenerationPreview:
     """Sample from the latest committed pretraining weights without changing the run."""
     path = run_dir / _LATEST
@@ -718,8 +726,8 @@ def generate_pretraining_example(prompt: str, *, data_dir: Path, fineweb_dir: Pa
     device = torch.device("cuda", torch.cuda.current_device())
     stop = Event()
     config = Config()
-    bundle = _load_bundle(data_dir, fineweb_dir, arxiv_dir, youtube_dir, primeintellect_math_dir, stop,
-                          context_length=config.context_length, verify_shards=False)
+    bundle = _load_bundle(data_dir, fineweb_dir, arxiv_dir, youtube_dir, primeintellect_math_dir,
+                          swallow_math_dir, stop, context_length=config.context_length, verify_shards=False)
     assert bundle is not None  # This display-only operation has no stop request.
     saved = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
     metadata = saved["metadata"]
@@ -739,7 +747,8 @@ def generate_pretraining_example(prompt: str, *, data_dir: Path, fineweb_dir: Pa
 
 
 def run_pretraining(report: ProgressCallback, stop_event: Event, *, data_dir: Path, fineweb_dir: Path,
-                    arxiv_dir: Path, youtube_dir: Path, primeintellect_math_dir: Path, run_dir: Path, log: Logger,
+                    arxiv_dir: Path, youtube_dir: Path, primeintellect_math_dir: Path, swallow_math_dir: Path,
+                    run_dir: Path, log: Logger,
                     sample_prompt: Callable[[], str], step_delay: Callable[[], float],
                     verify_shards: bool = False, init_from: Path | None = None,
                     generation_request: Event | None = None) -> None:
@@ -753,11 +762,13 @@ def run_pretraining(report: ProgressCallback, stop_event: Event, *, data_dir: Pa
         raise RuntimeError("Tool-calling pretraining requires CUDA.")
     device = torch.device("cuda", torch.cuda.current_device())
     with lock_run(run_dir):
-        log.info("Opening pretraining data: %s, %s, %s, %s and %s (full shard verification %s)",
-                 data_dir, fineweb_dir, arxiv_dir, youtube_dir, primeintellect_math_dir, "on" if verify_shards else "off")
+        log.info("Opening pretraining data: %s, %s, %s, %s, %s and %s (full shard verification %s)",
+                 data_dir, fineweb_dir, arxiv_dir, youtube_dir, primeintellect_math_dir, swallow_math_dir,
+                 "on" if verify_shards else "off")
         config = Config()
-        bundle = _load_bundle(data_dir, fineweb_dir, arxiv_dir, youtube_dir, primeintellect_math_dir, stop_event,
-                              context_length=config.context_length, verify_shards=verify_shards)
+        bundle = _load_bundle(data_dir, fineweb_dir, arxiv_dir, youtube_dir, primeintellect_math_dir,
+                              swallow_math_dir, stop_event, context_length=config.context_length,
+                              verify_shards=verify_shards)
         if bundle is None or stop_event.is_set():
             return
         torch.manual_seed(config.seed)
