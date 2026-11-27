@@ -14,6 +14,7 @@ class PretrainConfig:
     fineweb_dir: Path = Path("/mnt/StorageBox/datasets/pretrain-fineweb-8k-ctx1024")
     arxiv_dir: Path = Path("/mnt/StorageBox/datasets/pretrain-arxiv-8k-ctx1024")
     youtube_dir: Path = Path("/mnt/StorageBox/datasets/pretrain-youtube-8k-ctx1024")
+    primeintellect_math_dir: Path = Path("/mnt/StorageBox/datasets/pretrain-primeintellect-math-8k-ctx1024")
     run_dir: Path = Path("trained-models/tool-calling/runs/pretrain-wiki-qa-8k-2loops")
     init_from: Path | None = None
     sample_prompt: str = "Nottinghamshire is located in the center of"

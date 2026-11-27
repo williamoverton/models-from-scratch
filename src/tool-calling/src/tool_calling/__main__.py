@@ -97,7 +97,8 @@ def _run_training(args: argparse.Namespace) -> int:
         generation_prompt = launch.sample_prompt
         step_delay_seconds = launch.step_delay_seconds
         train = partial(run_pretraining, data_dir=launch.data_dir, fineweb_dir=launch.fineweb_dir,
-                        arxiv_dir=launch.arxiv_dir, youtube_dir=launch.youtube_dir, run_dir=run_dir,
+                        arxiv_dir=launch.arxiv_dir, youtube_dir=launch.youtube_dir,
+                        primeintellect_math_dir=launch.primeintellect_math_dir, run_dir=run_dir,
                         sample_prompt=lambda: generation_prompt,
                         verify_shards=launch.verify_shards, init_from=launch.init_from,
                         step_delay=lambda: launch.step_delay_seconds)
@@ -106,7 +107,8 @@ def _run_training(args: argparse.Namespace) -> int:
             generation_request = Event()
             generate_text = partial(generate_pretraining_example, data_dir=launch.data_dir,
                                     fineweb_dir=launch.fineweb_dir, arxiv_dir=launch.arxiv_dir,
-                                    youtube_dir=launch.youtube_dir, run_dir=run_dir)
+                                    youtube_dir=launch.youtube_dir,
+                                    primeintellect_math_dir=launch.primeintellect_math_dir, run_dir=run_dir)
     else:
         from .training import run_training
 

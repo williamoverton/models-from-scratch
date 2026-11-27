@@ -31,7 +31,7 @@ _LATEST = "pretrain-latest.pt"
 _BEST = "pretrain-best.pt"
 _CHECKPOINT_FORMAT = "llm-from-scratch/tool-calling-pretrain"
 _OPTIMIZER = "fused-adamw"
-_SOURCES = ("wikipedia", "qa", "fineweb", "arxiv", "youtube")
+_SOURCES = ("wikipedia", "qa", "fineweb", "arxiv", "youtube", "primeintellect_math")
 _FINEWEB_MIX = ("wikipedia", "wikipedia", "wikipedia", "fineweb", "wikipedia",
                 "wikipedia", "wikipedia", "fineweb", "wikipedia", "qa")
 _ARXIV_MIX = (
@@ -40,24 +40,29 @@ _ARXIV_MIX = (
     "fineweb", "arxiv", "wikipedia", "fineweb", "qa",
     "wikipedia", "fineweb", "arxiv", "wikipedia", "fineweb",
 )
-# One 1,000-update cycle, apportioned by packed training tokens.
-_MIX_COUNTS = {"wikipedia": 364, "qa": 36, "fineweb": 289, "arxiv": 165, "youtube": 146}
+_YOUTUBE_MIX_COUNTS = {"wikipedia": 364, "qa": 36, "fineweb": 289, "arxiv": 165, "youtube": 146}
+_ORCA_MIX_COUNTS = {**_YOUTUBE_MIX_COUNTS, "wikipedia": 363, "fineweb": 288, "orca_math": 2}
+# The retired pack's exact manifest identity allows resume without opening its files.
+_ORCA_MANIFEST_DIGEST = bytes.fromhex("25af56b19252ab1e7c0fd9b936423acc4b43aef5466d7563581e6d1d7061e8db")
+_MIX_COUNTS = {**_YOUTUBE_MIX_COUNTS, "wikipedia": 361, "fineweb": 287, "primeintellect_math": 5}
 
 
-def _make_mix() -> tuple[tuple[str, ...], tuple[int, ...]]:
+def _make_mix(counts: dict[str, int]) -> tuple[tuple[str, ...], tuple[int, ...]]:
     """Space each source's updates across the cycle by largest scheduling deficit."""
-    total = sum(_MIX_COUNTS.values())
-    used = dict.fromkeys(_SOURCES, 0)
+    total = sum(counts.values())
+    used = dict.fromkeys(counts, 0)
     mix, offsets = [], []
     for step in range(1, total + 1):
-        source = max(_SOURCES, key=lambda name: step * _MIX_COUNTS[name] - total * used[name])
+        source = max(counts, key=lambda name: step * counts[name] - total * used[name])
         mix.append(source)
         offsets.append(used[source])
         used[source] += 1
     return tuple(mix), tuple(offsets)
 
 
-_MIX, _MIX_OFFSETS = _make_mix()
+_YOUTUBE_MIX, _ = _make_mix(_YOUTUBE_MIX_COUNTS)
+_ORCA_MIX, _ = _make_mix(_ORCA_MIX_COUNTS)
+_MIX, _MIX_OFFSETS = _make_mix(_MIX_COUNTS)
 _TOKEN_DTYPE = np.dtype("<u2")
 _IGNORE_TARGET = -100
 
@@ -122,6 +127,8 @@ class _Bundle:
     base_manifest_sha256: str
     fineweb_manifest_sha256: str
     arxiv_manifest_sha256: str
+    youtube_manifest_sha256: str
+    orca_manifest_sha256: str
     tokenizer_sha256: str
     train: dict[str, _Split]
     validation: dict[str, _Split]
@@ -150,10 +157,11 @@ def _map_shard(path: Path, rows: int, width: int, digest: str, vocab_size: int,
 
 
 def _load_bundle(data_dir: Path, fineweb_dir: Path, arxiv_dir: Path, youtube_dir: Path,
-                 stop_event: Event, *, context_length: int, verify_shards: bool) -> _Bundle | None:
-    """Combine matching Wikipedia/Q&A, FineWeb, arXiv and YouTube packs."""
-    data_dir, fineweb_dir, arxiv_dir, youtube_dir = (
-        path.resolve() for path in (data_dir, fineweb_dir, arxiv_dir, youtube_dir))
+                 primeintellect_math_dir: Path, stop_event: Event, *, context_length: int,
+                 verify_shards: bool) -> _Bundle | None:
+    """Combine matching pretraining packs and retain their historical identities."""
+    data_dir, fineweb_dir, arxiv_dir, youtube_dir, primeintellect_math_dir = (
+        path.resolve() for path in (data_dir, fineweb_dir, arxiv_dir, youtube_dir, primeintellect_math_dir))
     manifest_path = data_dir / "manifest.json"
     try:
         manifest_bytes = manifest_path.read_bytes()
@@ -185,11 +193,13 @@ def _load_bundle(data_dir: Path, fineweb_dir: Path, arxiv_dir: Path, youtube_dir
         if not isinstance(sources, dict) or set(sources) != {"wikipedia", "qa"}:
             raise ValueError("Expected exactly the wikipedia and qa sources in the base bundle.")
         roots = {"wikipedia": data_dir, "qa": data_dir, "fineweb": fineweb_dir,
-                 "arxiv": arxiv_dir, "youtube": youtube_dir}
+                 "arxiv": arxiv_dir, "youtube": youtube_dir, "primeintellect_math": primeintellect_math_dir}
         base_digest = sha256(manifest_bytes)
         identity = base_digest.digest()
         identities = {}
-        for source in ("fineweb", "arxiv", "youtube"):
+        for source in _SOURCES[2:]:
+            if source == "primeintellect_math":
+                orca_identity = sha256(identity + _ORCA_MANIFEST_DIGEST).hexdigest()
             root = roots[source]
             extra_bytes = (root / "manifest.json").read_bytes()
             extra = json.loads(extra_bytes)
@@ -231,11 +241,12 @@ def _load_bundle(data_dir: Path, fineweb_dir: Path, arxiv_dir: Path, youtube_dir
                     seen.add(path)
                     shards.append(shard)
                 by_source[source] = _Split(shards, context_length)
-        return _Bundle(tokenizer, identities["youtube"], base_digest.hexdigest(),
-                       identities["fineweb"], identities["arxiv"], tokenizer_hash,
-                       splits["train"], splits["validation"])
+        return _Bundle(tokenizer, identities["primeintellect_math"], base_digest.hexdigest(),
+                       identities["fineweb"], identities["arxiv"], identities["youtube"],
+                       orca_identity, tokenizer_hash, splits["train"], splits["validation"])
     except (OSError, ValueError, KeyError, TypeError) as error:
-        raise ValueError(f"Invalid pretraining data ({data_dir}, {fineweb_dir}, {arxiv_dir}, {youtube_dir}): {error}") from error
+        raise ValueError(f"Invalid pretraining data ({data_dir}, {fineweb_dir}, {arxiv_dir}, "
+                         f"{youtube_dir}, {primeintellect_math_dir}): {error}") from error
 
 
 class _ShuffledRows:
@@ -325,6 +336,10 @@ def _checkpoint_mix(metadata: dict, bundle: _Bundle) -> str:
     identity, mix = metadata["manifest_sha256"], metadata.get("mix")
     if identity == bundle.manifest_sha256 and mix == _MIX:
         return "current"
+    if identity == bundle.orca_manifest_sha256 and mix == _ORCA_MIX:
+        return "orca"
+    if identity == bundle.youtube_manifest_sha256 and mix == _YOUTUBE_MIX:
+        return "youtube"
     if identity == bundle.arxiv_manifest_sha256 and mix == _ARXIV_MIX:
         return "arxiv"
     if identity == bundle.fineweb_manifest_sha256 and mix == _FINEWEB_MIX:
@@ -337,29 +352,31 @@ def _checkpoint_mix(metadata: dict, bundle: _Bundle) -> str:
 def _mix_cursor(previous: dict, bundle: _Bundle, step: int) -> tuple[int, dict[str, int]]:
     """Recover batch offsets at the start of the current schedule."""
     mix = _checkpoint_mix(previous, bundle)
-    if mix in ("current", "arxiv"):
+    if mix in ("current", "orca", "youtube", "arxiv"):
         start, offsets = previous["mix_start_step"], previous["mix_offsets"]
-        sources = _SOURCES if mix == "current" else _SOURCES[:-1]
+        previous_mix = {"current": _MIX, "orca": _ORCA_MIX, "youtube": _YOUTUBE_MIX, "arxiv": _ARXIV_MIX}[mix]
         if (type(start) is not int or not 0 <= start <= step or not isinstance(offsets, dict)
-                or set(offsets) != set(sources)
-                or any(type(count) is not int or count < 0 for count in offsets.values())
-                or sum(offsets.values()) != start):
+                or set(offsets) != set(previous_mix)
+                or any(type(count) is not int or count < 0 for count in offsets.values())):
+            raise ValueError("Invalid pretraining mix cursor.")
+        # Current offsets omit updates spent on retired Orca batches before the cutover.
+        accounted = sum(offsets.values())
+        if accounted > start or (mix != "current" and accounted != start):
             raise ValueError("Invalid pretraining mix cursor.")
         if mix == "current":
             return start, offsets
-        offsets = {**offsets, "youtube": 0}
-        previous_mix = _ARXIV_MIX
     else:
         start = previous["mix_start_step"] if mix == "fineweb" else step
         if type(start) is not int or not 0 <= start <= step:
             raise ValueError("Invalid pretraining mix start step.")
         qa = start // 10
-        offsets = {"wikipedia": start - qa, "qa": qa, "fineweb": 0, "arxiv": 0, "youtube": 0}
+        offsets = {"wikipedia": start - qa, "qa": qa}
         previous_mix = _FINEWEB_MIX
     cycles, tail = divmod(step - start, len(previous_mix))
-    for source in offsets:
-        offsets[source] += cycles * previous_mix.count(source) + previous_mix[:tail].count(source)
-    return step, offsets
+    return step, {
+        source: offsets.get(source, 0) + cycles * previous_mix.count(source) + previous_mix[:tail].count(source)
+        for source in _SOURCES
+    }
 
 
 def _source_batch(step: int, mix_start_step: int, offsets: dict[str, int]) -> tuple[str, int]:
@@ -690,7 +707,8 @@ def _report_training(report: ProgressCallback, log: Logger, progress: _Progress,
 
 
 def generate_pretraining_example(prompt: str, *, data_dir: Path, fineweb_dir: Path, arxiv_dir: Path,
-                                 youtube_dir: Path, run_dir: Path) -> TextGenerationPreview:
+                                 youtube_dir: Path, primeintellect_math_dir: Path,
+                                 run_dir: Path) -> TextGenerationPreview:
     """Sample from the latest committed pretraining weights without changing the run."""
     path = run_dir / _LATEST
     if not path.is_file():
@@ -700,8 +718,8 @@ def generate_pretraining_example(prompt: str, *, data_dir: Path, fineweb_dir: Pa
     device = torch.device("cuda", torch.cuda.current_device())
     stop = Event()
     config = Config()
-    bundle = _load_bundle(data_dir, fineweb_dir, arxiv_dir, youtube_dir, stop, context_length=config.context_length,
-                          verify_shards=False)
+    bundle = _load_bundle(data_dir, fineweb_dir, arxiv_dir, youtube_dir, primeintellect_math_dir, stop,
+                          context_length=config.context_length, verify_shards=False)
     assert bundle is not None  # This display-only operation has no stop request.
     saved = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
     metadata = saved["metadata"]
@@ -721,8 +739,8 @@ def generate_pretraining_example(prompt: str, *, data_dir: Path, fineweb_dir: Pa
 
 
 def run_pretraining(report: ProgressCallback, stop_event: Event, *, data_dir: Path, fineweb_dir: Path,
-                    arxiv_dir: Path, youtube_dir: Path, run_dir: Path, log: Logger, sample_prompt: Callable[[], str],
-                    step_delay: Callable[[], float],
+                    arxiv_dir: Path, youtube_dir: Path, primeintellect_math_dir: Path, run_dir: Path, log: Logger,
+                    sample_prompt: Callable[[], str], step_delay: Callable[[], float],
                     verify_shards: bool = False, init_from: Path | None = None,
                     generation_request: Event | None = None) -> None:
     """Run resumable CUDA FP16/fused AdamW pretraining until stopped."""
@@ -735,11 +753,11 @@ def run_pretraining(report: ProgressCallback, stop_event: Event, *, data_dir: Pa
         raise RuntimeError("Tool-calling pretraining requires CUDA.")
     device = torch.device("cuda", torch.cuda.current_device())
     with lock_run(run_dir):
-        log.info("Opening pretraining data: %s, %s, %s and %s (full shard verification %s)",
-                 data_dir, fineweb_dir, arxiv_dir, youtube_dir, "on" if verify_shards else "off")
+        log.info("Opening pretraining data: %s, %s, %s, %s and %s (full shard verification %s)",
+                 data_dir, fineweb_dir, arxiv_dir, youtube_dir, primeintellect_math_dir, "on" if verify_shards else "off")
         config = Config()
-        bundle = _load_bundle(data_dir, fineweb_dir, arxiv_dir, youtube_dir, stop_event, context_length=config.context_length,
-                              verify_shards=verify_shards)
+        bundle = _load_bundle(data_dir, fineweb_dir, arxiv_dir, youtube_dir, primeintellect_math_dir, stop_event,
+                              context_length=config.context_length, verify_shards=verify_shards)
         if bundle is None or stop_event.is_set():
             return
         torch.manual_seed(config.seed)
