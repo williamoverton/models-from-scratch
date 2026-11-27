@@ -61,7 +61,6 @@ class TextGenerationPanel(Static):
                 example.label,
                 "\n",
                 Content(example.context).stylize("$text-muted"),
-                "\n",
                 Content(example.completion).stylize("$accent"),
             )
             for example in preview.examples
